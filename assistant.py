@@ -31,7 +31,8 @@ class InvestmentAssistant:
         try:
             provider = self.storage.get_llm_provider()
             model = self.storage.get_llm_model()
-            self.client = LLMClient(api_key, model=model, provider=provider)
+            base_url = self.storage.get_llm_base_url()
+            self.client = LLMClient(api_key, model=model, provider=provider, base_url=base_url)
         except Exception as e:
             self.display.print_error(f"初始化 LLM 客户端失败: {e}")
             sys.exit(1)

@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 PROVIDER_DEFAULTS: Dict[str, Dict[str, str]] = {
     "gemini": {
         "base_url": "https://generativelanguage.googleapis.com/v1beta/openai/",
-        "model": "gemini-3.1-flash",
+        "model": "gemini-2.5-flash",
         "env_key": "GEMINI_API_KEY",
     },
     "openai": {
@@ -47,6 +47,7 @@ class LLMClient:
         api_key: Optional[str] = None,
         model: Optional[str] = None,
         provider: str = "gemini",
+        base_url: Optional[str] = None,
     ):
         self.provider = provider
         defaults = PROVIDER_DEFAULTS.get(provider, PROVIDER_DEFAULTS["gemini"])
@@ -59,10 +60,13 @@ class LLMClient:
 
         self.model = model or defaults["model"]
 
+        # base_url 优先级：参数 > 环境变量 LLM_BASE_URL > provider 默认值
+        resolved_base_url = base_url or os.getenv("LLM_BASE_URL") or defaults["base_url"]
+
         # 构建 OpenAI 客户端
         client_kwargs: Dict[str, Any] = {"api_key": self.api_key}
-        if defaults["base_url"]:
-            client_kwargs["base_url"] = defaults["base_url"]
+        if resolved_base_url:
+            client_kwargs["base_url"] = resolved_base_url
         self.client = OpenAI(**client_kwargs)
 
     def chat(self, prompt: str, history: Optional[List[Dict]] = None) -> str:

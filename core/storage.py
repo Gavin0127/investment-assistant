@@ -47,6 +47,10 @@ class Storage:
         """获取用户自定义的 LLM 模型名（可选，None 则用 provider 默认值）"""
         return os.getenv("LLM_MODEL") or self.get_config().get("llm_model")
 
+    def get_llm_base_url(self) -> Optional[str]:
+        """获取自定义 LLM base URL（可选，None 则用 provider 默认值）"""
+        return os.getenv("LLM_BASE_URL") or self.get_config().get("llm_base_url")
+
     def get_api_key(self) -> Optional[str]:
         """根据当前 provider 获取对应的 API Key"""
         provider = self.get_llm_provider()

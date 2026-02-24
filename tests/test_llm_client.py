@@ -41,7 +41,7 @@ class TestLLMClientInit:
             from core.openai_client import LLMClient
             c = LLMClient(api_key="gem-test", provider="gemini")
             assert c.api_key == "gem-test"
-            assert c.model == "gemini-3.1-flash"
+            assert c.model == "gemini-2.5-flash"
             assert c.provider == "gemini"
 
     def test_default_provider_is_gemini(self):
@@ -49,7 +49,7 @@ class TestLLMClientInit:
             from core.openai_client import LLMClient
             c = LLMClient(api_key="gem-test")
             assert c.provider == "gemini"
-            assert c.model == "gemini-3.1-flash"
+            assert c.model == "gemini-2.5-flash"
 
     def test_custom_model_override(self):
         with patch("core.openai_client.OpenAI"):
