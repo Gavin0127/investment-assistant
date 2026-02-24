@@ -5,13 +5,14 @@
 ## 项目概述
 
 Investment Research Assistant - 投资研究智能助手。
-使用 OpenAI GPT-5.2 作为 LLM 后端，Tavily + OpenClaw (Brave) 联合检索。
+支持 Gemini / OpenAI 双 LLM Provider（默认 Gemini），通过 OpenAI 兼容模式统一调用。
+Tavily + OpenClaw (Brave) 联合检索。使用 uv 管理 Python 环境。
 
 ## 模块边界
 
 ```
 core/
-  openai_client.py    # LLM 客户端（chat / chat_with_system / search_news_structured）
+  openai_client.py    # LLM 客户端（LLMClient，支持 Gemini/OpenAI 双 provider）
   retrieval.py         # 检索层（SearchManager / TavilyProvider / OpenClawWebSearchProvider）
   tavily_search.py     # Tavily API 封装
   storage.py           # 本地存储（playbook / config / research history）
@@ -27,33 +28,40 @@ web/app.py             # Flask Web UI
 
 - `collect_news` 返回 `Dict{"news": List[Dict], "search_metadata": Dict}`
 - 搜索缓存位于 `~/.investment-assistant/cache/search/`
-- 配置文件 key：`openai_api_key`（兼容旧版 `gemini_api_key`）
+- LLM Provider 配置优先级：环境变量 `LLM_PROVIDER` > config.json `llm_provider` > 默认 `gemini`
+- API Key 按 provider 分开管理：`GEMINI_API_KEY` / `OPENAI_API_KEY`
 - 禁止直接调用 Brave Search HTTP API；通过 OpenClaw Gateway `web_search` 工具
 
 ## 测试
 
 ```bash
 # 运行全部测试
-python -m pytest tests/ -v --tb=short
+uv run python -m pytest tests/ -v --tb=short
 
-# 运行单个测试文件
-python -m pytest tests/test_openai_client.py -v
+# 运行 LLM 客户端测试
+uv run python -m pytest tests/test_llm_client.py -v
 
 # E2E mock 测试
-python -m pytest tests/test_e2e_mock.py -v
+uv run python -m pytest tests/test_e2e_mock.py -v
 ```
 
 ## 环境变量
 
 | 变量 | 用途 | 必需 |
 |------|------|------|
-| `OPENAI_API_KEY` | OpenAI API 访问 | 是 |
+| `LLM_PROVIDER` | LLM Provider 选择（`gemini` / `openai`，默认 `gemini`） | 否 |
+| `LLM_MODEL` | 自定义模型名（覆盖 provider 默认值） | 否 |
+| `GEMINI_API_KEY` | Gemini API 访问 | 当 provider=gemini 时必需 |
+| `OPENAI_API_KEY` | OpenAI API 访问 | 当 provider=openai 时必需 |
 | `TAVILY_API_KEY` | Tavily 搜索 | 否（无则降级 RSS） |
 | `OPENCLAW_GATEWAY_URL` | OpenClaw Gateway 地址 | 否（默认读 ~/.openclaw/openclaw.json） |
 | `OPENCLAW_GATEWAY_TOKEN` | OpenClaw 认证 Token | 否 |
 
 ## 最近重大变更
 
+- 2026-02-24: 双 LLM Provider 支持 + uv 迁移
+  - LLMClient 支持 Gemini/OpenAI 切换，默认 Gemini
+  - 迁移到 uv + pyproject.toml
 - 2026-02-06: LLM 迁移 Gemini → OpenAI GPT-5.2 + 联合检索层
   - devlog: `docs/devlog/2026-02-06_core_openai-retrieval-migration.md`
 
