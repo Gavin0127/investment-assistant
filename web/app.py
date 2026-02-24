@@ -840,4 +840,4 @@ if __name__ == '__main__':
     print("="*50)
     print("\n访问地址: http://localhost:5000")
     print("按 Ctrl+C 停止服务\n")
-    app.run(debug=True, port=5000)
+    app.run(host="0.0.0.0", debug=True, port=5000)

@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 PROVIDER_DEFAULTS: Dict[str, Dict[str, str]] = {
     "gemini": {
         "base_url": "https://generativelanguage.googleapis.com/v1beta/openai/",
-        "model": "gemini-2.5-flash",
+        "model": "gemini-3.1-pro-preview",
         "env_key": "GEMINI_API_KEY",
     },
     "openai": {

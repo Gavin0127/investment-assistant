@@ -1,0 +1,16 @@
+services:
+  web:
+    build: .
+    ports:
+      - "5100:5000"
+    volumes:
+      - investment-data:/root/.investment-assistant
+    environment:
+      - LLM_PROVIDER=${LLM_PROVIDER:-openai}
+      - LLM_BASE_URL=${LLM_BASE_URL:-https://right.codes/codex/v1}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-sk-7e4db148f1204e94bb8abeabef87c8ca}
+      - TAVILY_API_KEY=${TAVILY_API_KEY:-}
+    restart: unless-stopped
+
+volumes:
+  investment-data:
