@@ -7,7 +7,7 @@ import sys
 import re
 from typing import Optional, Tuple, Dict, List
 
-from core.openai_client import OpenAIClient
+from core.openai_client import LLMClient
 from core.storage import Storage
 from core.interview import InterviewManager
 from core.environment import EnvironmentCollector
@@ -29,9 +29,11 @@ class InvestmentAssistant:
             api_key = self.storage.get_api_key()
 
         try:
-            self.client = OpenAIClient(api_key)
+            provider = self.storage.get_llm_provider()
+            model = self.storage.get_llm_model()
+            self.client = LLMClient(api_key, model=model, provider=provider)
         except Exception as e:
-            self.display.print_error(f"初始化 OpenAI 客户端失败: {e}")
+            self.display.print_error(f"初始化 LLM 客户端失败: {e}")
             sys.exit(1)
 
         self.interview = InterviewManager(self.client, self.storage)
@@ -44,9 +46,13 @@ class InvestmentAssistant:
 
     def _setup_api_key(self):
         """设置 API Key"""
-        self.display.print_info("首次使用，请设置 OpenAI API Key")
-        self.display.print("请在环境变量 OPENAI_API_KEY 或 ~/.investment-assistant/config.json 的 openai_api_key 中配置")
-        api_key = self.display.input("请输入 OpenAI API Key: ")
+        provider = self.storage.get_llm_provider()
+        self.display.print_info(f"首次使用，请设置 API Key（当前 Provider: {provider}）")
+        if provider == "gemini":
+            self.display.print("请在环境变量 GEMINI_API_KEY 或 ~/.investment-assistant/config.json 的 gemini_api_key 中配置")
+        else:
+            self.display.print("请在环境变量 OPENAI_API_KEY 或 ~/.investment-assistant/config.json 的 openai_api_key 中配置")
+        api_key = self.display.input("请输入 API Key: ")
         if api_key.strip():
             self.storage.set_api_key(api_key.strip())
             self.display.print_success("API Key 已保存")

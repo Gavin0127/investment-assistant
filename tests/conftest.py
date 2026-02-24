@@ -27,15 +27,29 @@ class _FakeResponse:
 
 @pytest.fixture()
 def mock_openai_client():
-    """Return a patched OpenAIClient that never hits the network."""
+    """Return a patched LLMClient (OpenAI provider) that never hits the network."""
     with patch.dict(os.environ, {"OPENAI_API_KEY": "sk-test-key"}):
         with patch("core.openai_client.OpenAI") as mock_cls:
             instance = MagicMock()
             instance.chat.completions.create.return_value = _FakeResponse()
             mock_cls.return_value = instance
 
-            from core.openai_client import OpenAIClient
-            client = OpenAIClient(api_key="sk-test-key")
+            from core.openai_client import LLMClient
+            client = LLMClient(api_key="sk-test-key", provider="openai")
+            yield client
+
+
+@pytest.fixture()
+def mock_gemini_client():
+    """Return a patched LLMClient (Gemini provider) that never hits the network."""
+    with patch.dict(os.environ, {"GEMINI_API_KEY": "gem-test-key"}):
+        with patch("core.openai_client.OpenAI") as mock_cls:
+            instance = MagicMock()
+            instance.chat.completions.create.return_value = _FakeResponse()
+            mock_cls.return_value = instance
+
+            from core.openai_client import LLMClient
+            client = LLMClient(api_key="gem-test-key", provider="gemini")
             yield client
 
 

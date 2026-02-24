@@ -11,7 +11,7 @@ from datetime import datetime
 import json
 import hashlib
 
-from core.openai_client import OpenAIClient
+from core.openai_client import LLMClient
 from core.storage import Storage
 from core.interview import InterviewManager
 from core.environment import EnvironmentCollector
@@ -82,7 +82,9 @@ def get_client():
     if client is None:
         api_key = storage.get_api_key()
         if api_key:
-            client = OpenAIClient(api_key)
+            provider = storage.get_llm_provider()
+            model = storage.get_llm_model()
+            client = LLMClient(api_key, model=model, provider=provider)
             interview_manager = InterviewManager(client, storage)
             env_collector = EnvironmentCollector(client, storage)
             research_engine = ResearchEngine(client, storage)
