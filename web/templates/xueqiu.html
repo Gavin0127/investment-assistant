@@ -1,5 +1,336 @@
 {% extends "base.html" %}
 {% block title %}雪球跟踪{% endblock %}
 {% block content %}
-<div>雪球跟踪页面（开发中）</div>
+<style>
+  .post-card { transition: background 0.15s, border-color 0.15s; }
+  .post-card:hover { background: #f9fafb; }
+  .post-card.active { background: #eff6ff; border-left: 3px solid #3b82f6; }
+  .post-card:not(.active) { border-left: 3px solid transparent; }
+  .tag-original { background: #dbeafe; color: #1e40af; }
+  .tag-retweet { background: #fef3c7; color: #92400e; }
+  .tag-column  { background: #ede9fe; color: #5b21b6; }
+  .filter-btn { transition: background 0.15s, color 0.15s; }
+  .filter-btn.active { background: #1e40af; color: #fff; }
+  .filter-btn:not(.active) { background: #f3f4f6; color: #6b7280; }
+  .filter-btn:not(.active):hover { background: #e5e7eb; color: #374151; }
+  .post-content img { max-width: 100%; height: auto; border-radius: 8px; margin: 8px 0; }
+  .post-content a { color: #2563eb; text-decoration: underline; }
+  .post-content blockquote { border-left: 3px solid #d1d5db; padding-left: 12px; margin: 12px 0; color: #6b7280; }
+  .line-clamp-2 { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+</style>
+
+<div x-data="xueqiuApp()" x-init="init()">
+  <!-- 顶部 -->
+  <div class="flex justify-between items-center mb-5">
+    <h1 class="text-2xl font-bold text-gray-900">雪球跟踪 - 逸修1</h1>
+    <div class="flex items-center gap-3">
+      <!-- 搜索框 -->
+      <div class="relative">
+        <svg class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
+        </svg>
+        <input type="text" x-model="query" @input="onSearch()" placeholder="搜索帖子..."
+               class="pl-9 pr-3 py-2 border border-gray-200 rounded-lg text-sm w-56 focus:outline-none focus:border-blue-400 focus:ring-1 focus:ring-blue-100">
+      </div>
+      <!-- 同步按钮 -->
+      <button @click="startSync()" :disabled="syncing"
+              class="bg-gray-800 hover:bg-gray-900 text-white px-4 py-2 rounded-lg text-sm disabled:opacity-50 transition-colors whitespace-nowrap">
+        <span x-show="!syncing">同步数据</span>
+        <span x-show="syncing" x-text="syncProgress || '同步中...'"></span>
+      </button>
+    </div>
+  </div>
+
+  <!-- 主面板 -->
+  <div class="bg-white rounded-xl border border-gray-200 overflow-hidden flex" style="height: calc(100vh - 180px);">
+
+    <!-- 左侧列表 -->
+    <div class="w-[35%] flex flex-col border-r border-gray-200 min-w-0">
+
+      <!-- 筛选栏 -->
+      <div class="p-3 border-b border-gray-200 space-y-2 flex-shrink-0">
+        <!-- 类型筛选 -->
+        <div class="flex gap-1.5">
+          <template x-for="f in [{key:'all',label:'全部'},{key:'original',label:'原创'},{key:'retweet',label:'转发'},{key:'column',label:'长文'}]" :key="f.key">
+            <button @click="setFilter(f.key)"
+                    :class="filter === f.key ? 'active' : ''"
+                    class="filter-btn px-3 py-1 rounded-md text-xs font-medium"
+                    x-text="f.label"></button>
+          </template>
+        </div>
+        <!-- 时间范围 -->
+        <div class="flex gap-2">
+          <input type="date" x-model="startDate" @change="resetAndLoad()"
+                 class="flex-1 px-2 py-1 border border-gray-200 rounded-md text-xs text-gray-600 focus:outline-none focus:border-blue-400">
+          <input type="date" x-model="endDate" @change="resetAndLoad()"
+                 class="flex-1 px-2 py-1 border border-gray-200 rounded-md text-xs text-gray-600 focus:outline-none focus:border-blue-400">
+        </div>
+      </div>
+
+      <!-- 帖子列表 -->
+      <div class="flex-1 overflow-y-auto">
+        <!-- 加载中 -->
+        <div x-show="loading && posts.length === 0" class="text-center py-16 text-gray-400 text-sm">加载中...</div>
+
+        <!-- 空状态 -->
+        <div x-show="!loading && posts.length === 0" class="text-center py-16 px-4">
+          <p class="text-gray-400 text-sm">暂无数据</p>
+          <p class="text-gray-300 text-xs mt-1">点击「同步数据」开始</p>
+        </div>
+
+        <!-- 列表 -->
+        <template x-for="p in posts" :key="p.id">
+          <div @click="selectPost(p.id)"
+               :class="selectedId === p.id ? 'active' : ''"
+               class="post-card px-3 py-2.5 border-b border-gray-100 cursor-pointer">
+            <div class="flex items-center gap-2 mb-1">
+              <span class="text-xs text-gray-400 font-mono" x-text="formatDate(p.created_at)"></span>
+              <span class="text-xs px-1.5 py-0.5 rounded font-medium"
+                    :class="typeLabel(p) === '长文' ? 'tag-column' : typeLabel(p) === '转发' ? 'tag-retweet' : 'tag-original'"
+                    x-text="typeLabel(p)"></span>
+            </div>
+            <template x-if="p.is_column && p.title">
+              <div class="text-sm font-medium text-gray-800 line-clamp-2" x-text="p.title"></div>
+            </template>
+            <div class="text-xs text-gray-500 line-clamp-2 mt-0.5" x-text="stripHtml(p.description || p.text || '')"></div>
+          </div>
+        </template>
+
+        <!-- 加载更多 -->
+        <div x-show="hasMore && posts.length > 0" class="p-3 text-center">
+          <button @click="loadMore()" :disabled="loading"
+                  class="text-sm text-blue-600 hover:text-blue-800 disabled:text-gray-300">
+            <span x-show="!loading">加载更多</span>
+            <span x-show="loading">加载中...</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- 同步状态 -->
+      <div x-show="lastSyncTime" class="px-3 py-2 border-t border-gray-100 flex-shrink-0">
+        <span class="text-xs text-gray-400" x-text="'上次同步: ' + lastSyncTime"></span>
+      </div>
+    </div>
+
+    <!-- 右侧详情 -->
+    <div class="w-[65%] overflow-y-auto min-w-0">
+
+      <!-- 空态 -->
+      <div x-show="!selectedPost" class="flex items-center justify-center h-full text-gray-400 text-sm">
+        选择一篇帖子开始阅读
+      </div>
+
+      <!-- 帖子详情 -->
+      <div x-show="selectedPost" class="p-6">
+        <!-- 标题 -->
+        <template x-if="selectedPost?.title">
+          <h2 class="text-xl font-bold text-gray-900 mb-3" x-text="selectedPost.title"></h2>
+        </template>
+
+        <!-- 元信息 -->
+        <div class="flex items-center gap-4 text-xs text-gray-400 mb-4 pb-4 border-b border-gray-100">
+          <span x-text="selectedPost?.created_at ? new Date(selectedPost.created_at).toLocaleString('zh-CN') : ''"></span>
+          <span x-show="selectedPost?.like_count > 0" x-text="'👍 ' + (selectedPost?.like_count || 0)"></span>
+          <span x-show="selectedPost?.reply_count > 0" x-text="'💬 ' + (selectedPost?.reply_count || 0)"></span>
+          <span x-show="selectedPost?.retweet_count > 0" x-text="'🔁 ' + (selectedPost?.retweet_count || 0)"></span>
+        </div>
+
+        <!-- 转发原文 -->
+        <template x-if="selectedPost?.retweet_text">
+          <div class="mb-4 bg-gray-50 border border-gray-200 rounded-lg p-4">
+            <div class="text-xs text-gray-400 mb-2">转发内容</div>
+            <div class="text-sm text-gray-600 post-content" x-html="processHtml(selectedPost.retweet_text)"></div>
+          </div>
+        </template>
+
+        <!-- 正文 -->
+        <div class="text-sm text-gray-800 leading-relaxed post-content" x-html="processHtml(selectedPost?.text || '')"></div>
+
+        <!-- 图片 -->
+        <template x-if="selectedPost?.images && selectedPost.images.length > 0">
+          <div class="mt-4 grid grid-cols-2 gap-2">
+            <template x-for="img in selectedPost.images" :key="img">
+              <img :src="'/api/xueqiu/images/' + selectedPost.id + '/' + img"
+                   :onerror="'this.style.display=\'none\''"
+                   class="rounded-lg border border-gray-100 w-full object-cover"
+                   loading="lazy">
+            </template>
+          </div>
+        </template>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+function xueqiuApp() {
+  return {
+    posts: [],
+    selectedId: null,
+    selectedPost: null,
+    filter: 'all',
+    query: '',
+    startDate: '',
+    endDate: '',
+    page: 1,
+    total: 0,
+    hasMore: true,
+    loading: false,
+    syncing: false,
+    syncProgress: '',
+    lastSyncTime: '',
+    debounceTimer: null,
+
+    async init() {
+      await this.loadPosts(false);
+      this.fetchSyncStatus();
+      // 从 URL hash 恢复选中状态
+      const hash = window.location.hash;
+      if (hash && hash.startsWith('#post-')) {
+        const id = parseInt(hash.slice(6));
+        if (id) this.selectPost(id);
+      }
+    },
+
+    async loadPosts(append) {
+      this.loading = true;
+      const params = new URLSearchParams({
+        page: this.page,
+        per_page: 30,
+        type: this.filter,
+      });
+      if (this.query) params.set('q', this.query);
+      if (this.startDate) params.set('start_date', this.startDate);
+      if (this.endDate) params.set('end_date', this.endDate);
+
+      try {
+        const resp = await fetch('/api/xueqiu/posts?' + params.toString());
+        const data = await resp.json();
+        if (append) {
+          this.posts = [...this.posts, ...data.posts];
+        } else {
+          this.posts = data.posts || [];
+        }
+        this.total = data.total || 0;
+        this.hasMore = this.posts.length < this.total;
+      } catch (e) {
+        console.error('Failed to load posts:', e);
+      }
+      this.loading = false;
+    },
+
+    async selectPost(id) {
+      this.selectedId = id;
+      window.location.hash = 'post-' + id;
+      try {
+        const resp = await fetch('/api/xueqiu/posts/' + id);
+        this.selectedPost = await resp.json();
+      } catch (e) {
+        console.error('Failed to load post:', e);
+      }
+    },
+
+    onSearch() {
+      clearTimeout(this.debounceTimer);
+      this.debounceTimer = setTimeout(() => {
+        this.resetAndLoad();
+      }, 300);
+    },
+
+    setFilter(f) {
+      this.filter = f;
+      this.resetAndLoad();
+    },
+
+    resetAndLoad() {
+      this.page = 1;
+      this.hasMore = true;
+      this.loadPosts(false);
+    },
+
+    loadMore() {
+      this.page++;
+      this.loadPosts(true);
+    },
+
+    async startSync() {
+      this.syncing = true;
+      this.syncProgress = '同步中...';
+      try {
+        await fetch('/api/xueqiu/sync', { method: 'POST' });
+        this.pollSyncStatus();
+      } catch (e) {
+        console.error('Sync failed:', e);
+        this.syncing = false;
+        this.syncProgress = '';
+      }
+    },
+
+    pollSyncStatus() {
+      const poll = setInterval(async () => {
+        try {
+          const resp = await fetch('/api/xueqiu/sync/status');
+          const data = await resp.json();
+          if (data.status === 'running') {
+            this.syncProgress = data.progress ? ('同步中 ' + data.progress) : ('已同步 ' + (data.count || 0) + ' 条');
+          } else {
+            clearInterval(poll);
+            this.syncing = false;
+            this.syncProgress = '';
+            if (data.last_sync_time) {
+              this.lastSyncTime = data.last_sync_time;
+            }
+            this.resetAndLoad();
+          }
+        } catch (e) {
+          clearInterval(poll);
+          this.syncing = false;
+          this.syncProgress = '';
+        }
+      }, 2000);
+    },
+
+    async fetchSyncStatus() {
+      try {
+        const resp = await fetch('/api/xueqiu/sync/status');
+        const data = await resp.json();
+        if (data.last_sync_time) {
+          this.lastSyncTime = data.last_sync_time;
+        }
+      } catch (e) { /* ignore */ }
+    },
+
+    processHtml(html) {
+      if (!html) return '';
+      const postId = this.selectedPost?.id;
+      if (!postId) return html;
+      // 替换图片 src 为本地路径
+      return html.replace(/<img([^>]*)\ssrc=["']([^"']+)["']/g, (match, attrs, src) => {
+        const filename = src.split('/').pop().split('?')[0];
+        const localSrc = '/api/xueqiu/images/' + postId + '/' + filename;
+        return '<img' + attrs + ' src="' + localSrc + '" onerror="this.src=\'' + src.replace(/'/g, "\\'") + '\'"';
+      });
+    },
+
+    formatDate(ts) {
+      if (!ts) return '';
+      const d = new Date(ts);
+      return String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+    },
+
+    typeLabel(p) {
+      if (p.is_column) return '长文';
+      if (p.retweet_status_id) return '转发';
+      return '原创';
+    },
+
+    stripHtml(html) {
+      if (!html) return '';
+      const tmp = document.createElement('div');
+      tmp.innerHTML = html;
+      return tmp.textContent || tmp.innerText || '';
+    },
+  };
+}
+</script>
 {% endblock %}
