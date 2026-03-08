@@ -61,3 +61,4 @@ uploads/
 
 # E2E / script outputs
 outputs/
+*.png

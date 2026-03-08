@@ -140,17 +140,29 @@ function socraticInterview() {
             this.started = true;
             this.loading = true;
 
-            const response = await fetch('/api/interview/start', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    type: 'stock',
-                    stock_name: this.stockName
-                })
-            });
+            try {
+                const response = await fetch('/api/interview/start', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        type: 'stock',
+                        stock_name: this.stockName
+                    })
+                });
 
-            const data = await response.json();
-            this.messages.push({ role: 'assistant', content: data.message });
+                const data = await response.json();
+                if (data.error) {
+                    this.messages.push({ role: 'assistant', content: `⚠️ ${data.error}` });
+                } else {
+                    this.messages.push({ role: 'assistant', content: data.message });
+                }
+            } catch (error) {
+                this.messages.push({
+                    role: 'assistant',
+                    content: `❌ **网络错误**: 请求失败，请检查网络连接后重试。`
+                });
+            }
+
             this.loading = false;
             this.scrollToBottom();
         },
