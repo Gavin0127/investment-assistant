@@ -25,6 +25,9 @@ class XueqiuScraper:
         self.db = XueqiuDB(db_path)
         self.image_dir = image_dir
         os.makedirs(image_dir, exist_ok=True)
+        # 浏览器 user data 目录，持久化 cookie 和登录状态
+        self._user_data_dir = os.path.join(os.path.dirname(db_path), "xueqiu_browser")
+        os.makedirs(self._user_data_dir, exist_ok=True)
         self._cookies: dict = {}
         self._headers: dict = {
             "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -46,6 +49,16 @@ class XueqiuScraper:
             from scrapling.fetchers import StealthyFetcher
 
             def login_then_sync(page):
+                # 检查是否已有登录 cookie（user_data_dir 持久化的）
+                cookies = page.context.cookies()
+                cookie_dict = {c["name"]: c["value"] for c in cookies}
+                if "u" in cookie_dict:
+                    logger.info("Reusing saved session, cookies: %s", list(cookie_dict.keys()))
+                    self._cookies = cookie_dict
+                    self._sync_via_interception(page, user_id)
+                    return page
+
+                # 需要扫码登录
                 self.sync_progress = "请在浏览器中登录雪球..."
                 for _ in range(300):  # 5 min timeout
                     cookies = page.context.cookies()
@@ -63,6 +76,7 @@ class XueqiuScraper:
                 f"{_BASE_URL}/",
                 headless=headless,
                 timeout=60000,
+                user_data_dir=self._user_data_dir,
                 page_action=login_then_sync,
             )
         except Exception as e:
