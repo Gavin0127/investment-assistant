@@ -87,7 +87,9 @@ def get_client():
             provider = storage.get_llm_provider()
             model = storage.get_llm_model()
             base_url = storage.get_llm_base_url()
-            client = LLMClient(api_key, model=model, provider=provider, base_url=base_url)
+            client = LLMClient(api_key, model=model, provider=provider, base_url=base_url,
+                               model_fast=storage.get_llm_model_fast(),
+                               model_reasoning=storage.get_llm_model_reasoning())
             interview_manager = InterviewManager(client, storage)
             env_collector = EnvironmentCollector(client, storage)
             research_engine = ResearchEngine(client, storage)
