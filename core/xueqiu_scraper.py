@@ -55,7 +55,7 @@ class XueqiuScraper:
                 if "u" in cookie_dict:
                     logger.info("Reusing saved session, cookies: %s", list(cookie_dict.keys()))
                     self._cookies = cookie_dict
-                    self._sync_via_interception(page, user_id)
+                    self._sync_all(page, user_id)
                     return page
 
                 # 需要扫码登录
@@ -67,7 +67,7 @@ class XueqiuScraper:
                         logger.info("Login detected, cookies: %s", list(cookie_dict.keys()))
                         page.wait_for_timeout(2000)
                         self._cookies = {c["name"]: c["value"] for c in page.context.cookies()}
-                        self._sync_via_interception(page, user_id)
+                        self._sync_all(page, user_id)
                         return page
                     page.wait_for_timeout(1000)
                 raise TimeoutError("登录超时（5分钟）")
@@ -85,148 +85,80 @@ class XueqiuScraper:
             logger.error("Sync failed: %s", e)
             raise
 
-    def _sync_via_interception(self, page, user_id: int):
-        """导航到用户主页，拦截页面自身的 timeline API 响应来获取数据。"""
+    def _sync_all(self, page, user_id: int):
+        """用 fetch() 精确分页同步所有帖子。"""
         self.sync_status = "syncing"
+        self._ensure_waf_ready(page)
+
         last_id = self.db.get_latest_post_id()
         incremental = last_id is not None
         total_saved = 0
         stop = False
-        captured_responses: list = []
+        pending_images: list = []  # [(post_id, url, seq), ...]
+        max_pages = 200
+        waf_retries = 0
 
-        def on_response(response):
-            """拦截页面发出的 timeline API 响应。"""
-            if _TIMELINE_API in response.url:
-                try:
-                    data = response.json()
-                    captured_responses.append(data)
-                    logger.info("Captured timeline response, statuses=%d", len(data.get("statuses", [])))
-                except Exception as e:
-                    logger.warning("Failed to parse captured response: %s", e)
-
-        page.on("response", on_response)
-
-        # 导航到用户主页，触发第一次 timeline API 请求
-        self.sync_progress = "正在加载用户主页..."
-        logger.info("Navigating to user page: %s/u/%d", _BASE_URL, user_id)
-        page.goto(f"{_BASE_URL}/u/{user_id}", wait_until="networkidle", timeout=60000)
-        page.wait_for_timeout(3000)
-
-        # 处理首次加载捕获的数据
         pg = 1
-        for data in captured_responses:
-            self.sync_progress = f"正在处理第 {pg} 页..."
+        while not stop and pg <= max_pages:
+            self.sync_progress = f"正在拉取第 {pg} 页..."
+            logger.info("Fetching timeline page %d", pg)
+
+            data = self._browser_fetch_api(
+                page, _TIMELINE_API, {"user_id": user_id, "page": pg}
+            )
+            if data is None:
+                if waf_retries < 3:
+                    logger.warning("WAF retry %d/3", waf_retries + 1)
+                    self._ensure_waf_ready(page)
+                    waf_retries += 1
+                    continue
+                logger.error("WAF retries exhausted, stopping")
+                break
+            waf_retries = 0
+
             posts = self._parse_timeline(data)
+            if not posts:
+                break
+
             for post in posts:
                 if incremental and self.db.get_post(post["id"]):
                     stop = True
                     continue
+
                 if self._needs_full_fetch(post):
-                    # 长文需要完整内容，通过点击进入详情页获取
-                    full = self._fetch_article_in_browser(page, post["id"])
+                    full = self._browser_fetch_api(
+                        page, _SHOW_API, {"id": post["id"]}
+                    )
                     if full:
                         post["text"] = full.get("text", post.get("text", ""))
                         post["title"] = full.get("title", post.get("title"))
+
                 img_urls = self._extract_image_urls(post.get("text"))
                 self.db.save_post(post)
                 for seq, url in enumerate(img_urls):
-                    local = self._download_image(post["id"], url, seq)
-                    self.db.save_image(post["id"], url, local, seq)
+                    pending_images.append((post["id"], url, seq))
+
                 total_saved += 1
                 self.sync_count = total_saved
-                self.sync_progress = f"已保存 {total_saved} 条"
+                self.sync_progress = f"已保存 {total_saved} 条帖子"
+
             pg += 1
+            page.wait_for_timeout(1500)
 
-        # 模拟滚动加载更多页
-        max_scroll_pages = 50
-        while not stop and pg <= max_scroll_pages:
-            captured_responses.clear()
-            self.sync_progress = f"正在滚动加载第 {pg} 页..."
-            logger.info("Scrolling to load page %d", pg)
+        # 批量下载图片
+        if pending_images:
+            self.sync_progress = f"正在下载 {len(pending_images)} 张图片..."
+            for i, (post_id, url, seq) in enumerate(pending_images):
+                local = self._download_image(post_id, url, seq)
+                self.db.save_image(post_id, url, local, seq)
+                if (i + 1) % 10 == 0:
+                    self.sync_progress = f"图片 {i+1}/{len(pending_images)}"
 
-            # 滚动到底部触发加载
-            page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-            page.wait_for_timeout(3000)
-
-            if not captured_responses:
-                # 没有新的 API 响应，可能已经到底了
-                logger.info("No more timeline responses captured, stopping")
-                break
-
-            for data in captured_responses:
-                posts = self._parse_timeline(data)
-                if not posts:
-                    stop = True
-                    break
-                for post in posts:
-                    if incremental and self.db.get_post(post["id"]):
-                        stop = True
-                        continue
-                    if self._needs_full_fetch(post):
-                        full = self._fetch_article_in_browser(page, post["id"])
-                        if full:
-                            post["text"] = full.get("text", post.get("text", ""))
-                            post["title"] = full.get("title", post.get("title"))
-                    img_urls = self._extract_image_urls(post.get("text"))
-                    self.db.save_post(post)
-                    for seq, url in enumerate(img_urls):
-                        local = self._download_image(post["id"], url, seq)
-                        self.db.save_image(post["id"], url, local, seq)
-                    total_saved += 1
-                    self.sync_count = total_saved
-                    self.sync_progress = f"已保存 {total_saved} 条"
-            pg += 1
-
-        page.remove_listener("response", on_response)
         self.db.set_sync_state("last_sync_time", str(int(time.time())))
         self.db.set_sync_state("total_synced", str(total_saved))
         self.sync_status = "done"
         self.sync_progress = f"同步完成，共 {total_saved} 条"
-        logger.info("Sync complete: %d posts saved", total_saved)
-
-    def _fetch_article_in_browser(self, page, post_id: int) -> Optional[dict]:
-        """在浏览器内通过拦截获取长文详情。"""
-        captured = []
-
-        def on_show_response(response):
-            if _SHOW_API in response.url and str(post_id) in response.url:
-                try:
-                    captured.append(response.json())
-                except Exception:
-                    pass
-
-        page.on("response", on_show_response)
-        try:
-            page.goto(f"{_BASE_URL}/{post_id}", wait_until="networkidle", timeout=30000)
-            page.wait_for_timeout(2000)
-        except Exception as e:
-            logger.warning("Failed to load article %d: %s", post_id, e)
-        finally:
-            page.remove_listener("response", on_show_response)
-
-        if captured:
-            return captured[0]
-        # fallback: 从页面 DOM 提取
-        try:
-            text = page.evaluate("() => document.querySelector('.article__bd')?.innerHTML || ''")
-            title = page.evaluate("() => document.querySelector('.article__title')?.textContent || ''")
-            if text:
-                return {"text": text, "title": title}
-        except Exception:
-            pass
-        return None
-
-    def _api_get(self, path: str, params: dict) -> Optional[dict]:
-        try:
-            resp = requests.get(
-                f"{_BASE_URL}{path}", params=params,
-                cookies=self._cookies, headers=self._headers, timeout=15,
-            )
-            resp.raise_for_status()
-            return resp.json()
-        except Exception as e:
-            logger.error("API request failed: %s %s — %s", path, params, e)
-            return None
+        logger.info("Sync complete: %d posts, %d images", total_saved, len(pending_images))
 
     def _ensure_waf_ready(self, page):
         """导航到雪球首页，等待 WAF JS Challenge 完成。"""
@@ -288,10 +220,6 @@ class XueqiuScraper:
             and post.get("is_column")
             and not post.get("text")
         )
-
-    def _fetch_full_article(self, post_id: int) -> Optional[dict]:
-        data = self._api_get(_SHOW_API, {"id": post_id})
-        return data if data else None
 
     def _extract_image_urls(self, html: Optional[str]) -> List[str]:
         if not html:
