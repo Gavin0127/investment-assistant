@@ -922,15 +922,21 @@ def api_batch_research_stock(stock_id):
 # ==================== 雪球跟踪 API ====================
 
 import threading
+import re as _re
 
 _xueqiu_scraper = None
 _xueqiu_sync_thread = None
+_xueqiu_db = None
+_xueqiu_sync_lock = threading.Lock()
 
 
 def _get_xueqiu_db():
-    from core.xueqiu_db import XueqiuDB
-    db_path = os.path.join(str(storage.base_dir), "data", "xueqiu_posts.db")
-    return XueqiuDB(db_path)
+    global _xueqiu_db
+    if _xueqiu_db is None:
+        from core.xueqiu_db import XueqiuDB
+        db_path = os.path.join(str(storage.base_dir), "data", "xueqiu_posts.db")
+        _xueqiu_db = XueqiuDB(db_path)
+    return _xueqiu_db
 
 
 def _get_xueqiu_scraper():
@@ -954,11 +960,14 @@ def xueqiu_page():
 def api_xueqiu_list_posts():
     db = _get_xueqiu_db()
     page = request.args.get('page', 1, type=int)
-    per_page = request.args.get('per_page', 30, type=int)
+    per_page = min(request.args.get('per_page', 30, type=int), 100)  # M7: 上限 100
     post_type = request.args.get('type', 'all')
-    query = request.args.get('q', '')
-    start_date = request.args.get('start_date', '')
-    end_date = request.args.get('end_date', '')
+    # I5: "all" 转为 None，让 list_posts 不做类型筛选
+    if post_type == 'all':
+        post_type = None
+    query = request.args.get('q', '') or None
+    start_date = request.args.get('start_date', '') or None
+    end_date = request.args.get('end_date', '') or None
     posts, total = db.list_posts(
         page=page, per_page=per_page, post_type=post_type,
         query=query, start_date=start_date, end_date=end_date,
@@ -980,6 +989,10 @@ def api_xueqiu_get_post(post_id):
 @app.route('/api/xueqiu/images/<int:post_id>/<filename>', methods=['GET'])
 @requires_auth
 def api_xueqiu_image(post_id, filename):
+    # C2: 校验 filename 防止路径遍历
+    if not _re.match(r'^[\w\-\.]+$', filename):
+        from werkzeug.exceptions import NotFound
+        raise NotFound()
     from flask import send_from_directory
     image_dir = os.path.join(str(storage.base_dir), "data", "xueqiu_images", str(post_id))
     return send_from_directory(image_dir, filename)
@@ -990,9 +1003,11 @@ def api_xueqiu_image(post_id, filename):
 def api_xueqiu_sync():
     global _xueqiu_sync_thread
     scraper = _get_xueqiu_scraper()
-    if scraper.sync_status in ("syncing", "logging_in"):
+    # I4: 用 lock 防止并发同步竞态条件
+    if not _xueqiu_sync_lock.acquire(blocking=False):
         return jsonify({"error": "同步正在进行中"}), 409
     data = request.json or {}
+    # M2: 默认 user_id 为逸修1，后续可改为从配置读取
     user_id = data.get("user_id", 1936609590)
 
     def run_sync():
@@ -1001,6 +1016,8 @@ def api_xueqiu_sync():
         except Exception as e:
             scraper.sync_status = "error"
             scraper.sync_progress = str(e)
+        finally:
+            _xueqiu_sync_lock.release()
 
     _xueqiu_sync_thread = threading.Thread(target=run_sync, daemon=True)
     _xueqiu_sync_thread.start()

@@ -113,7 +113,7 @@
     </div>
 
     <!-- 右侧详情 -->
-    <div class="w-[65%] overflow-y-auto min-w-0">
+    <div class="w-[65%] overflow-y-auto min-w-0 reading-area">
 
       <!-- 空态 -->
       <div x-show="!selectedPost" class="flex items-center justify-center h-full text-gray-400 text-sm">
@@ -190,6 +190,13 @@ function xueqiuApp() {
         const id = parseInt(hash.slice(6));
         if (id) this.selectPost(id);
       }
+      // I6: 事件委托处理图片加载失败，避免 onerror 属性 XSS
+      document.querySelector('.reading-area')?.addEventListener('error', (e) => {
+        if (e.target.tagName === 'IMG' && e.target.dataset.fallback) {
+          e.target.src = e.target.dataset.fallback;
+          delete e.target.dataset.fallback;
+        }
+      }, true);
     },
 
     async loadPosts(append) {
@@ -266,12 +273,13 @@ function xueqiuApp() {
       }
     },
 
+    // I9: 匹配后端实际状态值 syncing / logging_in
     pollSyncStatus() {
       const poll = setInterval(async () => {
         try {
           const resp = await fetch('/api/xueqiu/sync/status');
           const data = await resp.json();
-          if (data.status === 'running') {
+          if (data.status === 'syncing' || data.status === 'logging_in') {
             this.syncProgress = data.progress ? ('同步中 ' + data.progress) : ('已同步 ' + (data.count || 0) + ' 条');
           } else {
             clearInterval(poll);
@@ -302,13 +310,18 @@ function xueqiuApp() {
 
     processHtml(html) {
       if (!html) return '';
+      // C1: DOMPurify 消毒
+      let cleaned = DOMPurify.sanitize(html, {
+        ALLOWED_TAGS: ['p','br','div','span','img','a','b','strong','i','em','u','h1','h2','h3','h4','h5','h6','ul','ol','li','table','tr','td','th','thead','tbody','blockquote','pre','code','hr'],
+        ALLOWED_ATTR: ['src','href','class','style','alt','title','width','height']
+      });
       const postId = this.selectedPost?.id;
-      if (!postId) return html;
-      // 替换图片 src 为本地路径
-      return html.replace(/<img([^>]*)\ssrc=["']([^"']+)["']/g, (match, attrs, src) => {
+      if (!postId) return cleaned;
+      // I6: 用 data-fallback 替代 onerror 属性
+      return cleaned.replace(/<img([^>]*)\ssrc=["']([^"']+)["']/g, (match, attrs, src) => {
         const filename = src.split('/').pop().split('?')[0];
         const localSrc = '/api/xueqiu/images/' + postId + '/' + filename;
-        return '<img' + attrs + ' src="' + localSrc + '" onerror="this.src=\'' + src.replace(/'/g, "\\'") + '\'"';
+        return '<img' + attrs + ' src="' + localSrc + '" data-fallback="' + encodeURI(src) + '"';
       });
     },
 
@@ -324,11 +337,10 @@ function xueqiuApp() {
       return '原创';
     },
 
+    // M4: 用正则替换代替 innerHTML，避免潜在 XSS
     stripHtml(html) {
       if (!html) return '';
-      const tmp = document.createElement('div');
-      tmp.innerHTML = html;
-      return tmp.textContent || tmp.innerText || '';
+      return html.replace(/<[^>]*>/g, '').substring(0, 200);
     },
   };
 }

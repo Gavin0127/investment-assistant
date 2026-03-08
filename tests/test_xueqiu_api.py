@@ -32,8 +32,9 @@ def app_client(tmp_path):
             "retweet_status_id": 100 if i == 2 else 0,
         })
 
-    # Reset global scraper so it picks up new paths
+    # Reset global scraper and db singleton so it picks up new paths
     webapp._xueqiu_scraper = None
+    webapp._xueqiu_db = None
 
     webapp.app.config["TESTING"] = True
     with webapp.app.test_client() as client:

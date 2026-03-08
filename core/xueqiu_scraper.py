@@ -96,9 +96,10 @@ class XueqiuScraper:
                 break
 
             for post in posts:
+                # I3: 遇到已存在的帖子标记停止，但 continue 处理完当前页
                 if incremental and self.db.get_post(post["id"]):
                     stop = True
-                    break
+                    continue
 
                 if self._needs_full_fetch(post):
                     full = self._fetch_full_article(post["id"])
@@ -181,6 +182,8 @@ class XueqiuScraper:
         return re.findall(r'<img[^>]+src="([^"]+)"', html)
 
     def _download_image(self, post_id: int, url: str, seq: int) -> Optional[str]:
+        # M3: 流式下载 + 10MB 大小限制
+        _MAX_IMAGE_SIZE = 10 * 1024 * 1024
         try:
             parsed = urlparse(url)
             ext = Path(parsed.path).suffix or ".jpg"
@@ -188,9 +191,17 @@ class XueqiuScraper:
             local_dir = Path(self.image_dir) / str(post_id)
             local_dir.mkdir(parents=True, exist_ok=True)
             local_path = local_dir / filename
-            resp = requests.get(url, headers=self._headers, timeout=15)
+            resp = requests.get(url, headers=self._headers, timeout=15, stream=True)
             resp.raise_for_status()
-            local_path.write_bytes(resp.content)
+            size = 0
+            chunks = []
+            for chunk in resp.iter_content(chunk_size=8192):
+                size += len(chunk)
+                if size > _MAX_IMAGE_SIZE:
+                    logger.warning("Image too large (>10MB), skipping: %s", url)
+                    return None
+                chunks.append(chunk)
+            local_path.write_bytes(b"".join(chunks))
             return str(local_path)
         except Exception as e:
             logger.warning("Image download failed: %s — %s", url, e)
