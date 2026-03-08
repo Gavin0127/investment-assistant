@@ -23,6 +23,9 @@ uv run python -m pytest tests/test_llm_client.py::TestLLMClientInit::test_defaul
 uv run python web/app.py                         # Web UI (http://localhost:5000)
 uv run python assistant.py                       # CLI 交互模式
 
+# 利润跟踪
+uv run python scripts/update_prices.py           # 手动更新大宗商品价格
+
 # Docker
 docker compose up -d                             # 容器启动 (端口 5100)
 docker compose logs -f                           # 查看日志
@@ -39,7 +42,8 @@ LLMClient + Storage
     ├── InterviewManager(client, storage)
     ├── EnvironmentCollector(client, storage)
     ├── ResearchEngine(client, storage)
-    └── PreferenceLearner(client, storage)
+    ├── PreferenceLearner(client, storage)
+    └── ProfitTracker(client, storage)
 ```
 
 Web 端通过 `get_client()` 懒加载单例（`web/app.py:80`），CLI 端在 `InvestmentAssistant.__init__` 中初始化（`assistant.py:31`）。
@@ -84,6 +88,8 @@ User Feedback → Preference Learning → 下一轮研究上下文
 - `user_preferences.json`: 偏好规则 + 交互日志（最多 100 条）
 - `stocks/{stock_id}/playbook.json`: 个股投资逻辑
 - `stocks/{stock_id}/history.json`: 研究记录（支持 milestone 标记为永久上下文）
+- `stocks/{stock_id}/profit_model.json`: 利润敏感性模型配置
+- `data/commodity_prices.db`: 大宗商品价格（SQLite）
 
 ## 关键约定
 
@@ -91,7 +97,18 @@ User Feedback → Preference Learning → 下一轮研究上下文
 - LLM Provider 配置优先级：环境变量 `LLM_PROVIDER` > config.json `llm_provider` > 默认 `gemini`
 - API Key 按 provider 分开管理：`GEMINI_API_KEY` / `OPENAI_API_KEY`
 - Interview 模块通过检测响应中的 JSON 代码块判断访谈是否结束，提取 playbook 时有 4 层 fallback（末尾代码块 → 花括号匹配 → 直接解析 → 清理尾逗号重试）
+- `stock_id` 标准化：小写 + 空格替换为下划线（如 `"Soft Bank"` → `"soft_bank"`）
 - Research 记录 ID 格式：`research_YYYYMMDD_HHMMSS`
+- Preference ID 格式：`pref_YYYYMMDD_HHMMSS_{index}`
+- Milestone 标记的研究记录会作为永久上下文参与后续研究（不受历史窗口限制）
+- Web 端支持可选认证（通过 `/api/auth/setup` 配置），认证状态存储在 config.json
+
+## 测试
+
+`tests/conftest.py` 提供共享 fixtures：
+- `mock_openai_client` / `mock_gemini_client`：patch 了网络调用的 LLMClient，不会真实请求 API
+- `tmp_storage`：基于 `tmp_path` 的临时 Storage 实例
+- `sample_stock_playbook` / `sample_portfolio_playbook`：标准 playbook 数据结构样例
 
 ## 环境变量
 
@@ -108,6 +125,8 @@ User Feedback → Preference Learning → 下一轮研究上下文
 
 ## 最近重大变更
 
+- 2026-03-08: 利润跟踪模块（原材料价格 → 利润敏感性）
+  - 设计文档: `docs/plans/2026-03-08-profit-tracker-design.md`
 - 2026-02-24: 双 LLM Provider 支持 + uv 迁移 + Docker 化
 - 2026-02-06: LLM 迁移 Gemini → OpenAI GPT-5.2 + 联合检索层
   - devlog: `docs/devlog/2026-02-06_core_openai-retrieval-migration.md`
