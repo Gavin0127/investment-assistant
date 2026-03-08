@@ -923,6 +923,6 @@ if __name__ == '__main__':
     print("\n" + "="*50)
     print("投资研究助手 Web 版")
     print("="*50)
-    print("\n访问地址: http://localhost:5000")
+    print("\n访问地址: http://localhost:8100")
     print("按 Ctrl+C 停止服务\n")
-    app.run(host="0.0.0.0", debug=True, port=5000)
+    app.run(host="0.0.0.0", debug=True, port=8100)

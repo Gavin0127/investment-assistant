@@ -1,141 +1,454 @@
 {% extends "base.html" %}
 {% block title %}利润跟踪{% endblock %}
 {% block content %}
+<style>
+  .tab-active { color: #1e40af; border-bottom: 2px solid #1e40af; background: #eff6ff; }
+  .tab-idle { color: #6b7280; border-bottom: 2px solid transparent; }
+  .tab-idle:hover { color: #374151; background: #f9fafb; }
+  .param-input {
+    width: 100%; padding: 6px 8px; border: 1px solid #d1d5db; border-radius: 6px;
+    font-size: 13px; font-variant-numeric: tabular-nums;
+    transition: border-color 0.15s, box-shadow 0.15s;
+  }
+  .param-input:focus { outline: none; border-color: #3b82f6; box-shadow: 0 0 0 2px rgba(59,130,246,0.15); }
+  .param-label { font-size: 12px; color: #6b7280; margin-bottom: 2px; display: block; }
+  .scenario-row { transition: background 0.15s; }
+  .scenario-row:hover { background: #f9fafb; }
+  .save-flash { animation: flashGreen 1.5s ease; }
+  @keyframes flashGreen {
+    0% { background: #dcfce7; } 100% { background: transparent; }
+  }
+</style>
+
 <div x-data="profitDashboard()" x-init="init()">
-  <!-- 顶部操作栏 -->
-  <div class="flex justify-between items-center mb-6">
+  <!-- 顶部 -->
+  <div class="flex justify-between items-center mb-5">
     <h1 class="text-2xl font-bold text-gray-900">利润跟踪</h1>
     <button @click="refreshAll()" :disabled="refreshing"
-            class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm disabled:opacity-50">
+            class="bg-gray-800 hover:bg-gray-900 text-white px-4 py-2 rounded-lg text-sm disabled:opacity-50 transition-colors">
       <span x-show="!refreshing">刷新价格数据</span>
       <span x-show="refreshing">刷新中...</span>
     </button>
   </div>
 
   <!-- 加载中 -->
-  <div x-show="loading" class="text-center py-12 text-gray-500">加载中...</div>
+  <div x-show="loading" class="text-center py-16 text-gray-400">加载中...</div>
 
   <!-- 空状态 -->
-  <div x-show="models.length === 0 && !loading" class="bg-white rounded-xl shadow-sm border border-gray-100 p-12 text-center">
+  <div x-show="models.length === 0 && !loading" class="bg-white rounded-xl border border-gray-200 p-16 text-center">
     <p class="text-gray-500">暂无利润模型配置</p>
     <p class="text-sm text-gray-400 mt-2">在股票详情页中配置利润模型后，数据将在此展示</p>
   </div>
 
-  <!-- 股票卡片网格 -->
-  <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
-    <template x-for="model in models" :key="model.stock_id">
-      <div class="bg-white rounded-xl shadow-sm border border-gray-100">
-        <!-- 卡片头部 -->
-        <div class="p-4 border-b border-gray-100">
-          <div class="flex justify-between items-center">
-            <a :href="'/stock/' + model.stock_id" class="text-lg font-bold text-gray-900 hover:text-blue-600" x-text="model.stock_name"></a>
-            <span class="text-xs text-gray-500" x-text="model.annualization + ' · ' + model.base_period"></span>
+  <!-- 主面板 -->
+  <div x-show="models.length > 0 && !loading" class="bg-white rounded-xl border border-gray-200 overflow-hidden">
+
+    <!-- 页签 -->
+    <div class="flex border-b border-gray-200 px-2 pt-1 gap-1 overflow-x-auto">
+      <template x-for="m in models" :key="m.stock_id">
+        <button @click="switchTab(m.stock_id)"
+                :class="activeTab === m.stock_id ? 'tab-active' : 'tab-idle'"
+                class="px-4 py-2.5 text-sm font-medium whitespace-nowrap rounded-t-lg transition-colors"
+                x-text="m.stock_name">
+        </button>
+      </template>
+    </div>
+
+    <!-- 内容区：图表 + 参数面板 -->
+    <div class="flex flex-col lg:flex-row">
+
+      <!-- 左侧：图表 -->
+      <div class="lg:w-[65%] p-4 border-b lg:border-b-0 lg:border-r border-gray-100">
+        <div id="main-chart" style="height: 340px;"></div>
+      </div>
+
+      <!-- 右侧：参数面板 -->
+      <div class="lg:w-[35%] p-4">
+        <div class="flex items-center justify-between mb-4">
+          <h3 class="text-sm font-semibold text-gray-700">模型参数</h3>
+          <span x-show="dirty" class="text-xs text-amber-600 bg-amber-50 px-2 py-0.5 rounded-full">未保存</span>
+          <span x-show="justSaved" x-transition class="text-xs text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded-full">已保存</span>
+        </div>
+
+        <div class="space-y-3">
+          <!-- 年化方式 -->
+          <div>
+            <label class="param-label">年化方式</label>
+            <select x-model="ep.annualization" @change="onParamChange()"
+                    class="param-input bg-white cursor-pointer">
+              <option value="H1x2">H1×2（半年报×2）</option>
+              <option value="Qx4">Q×4（季报×4）</option>
+              <option value="annual">Annual（年报）</option>
+            </select>
           </div>
-          <p class="text-xs text-gray-400 mt-1" x-text="model.commodities.map(c => c.name).join(' + ')"></p>
+
+          <!-- 基准期间 -->
+          <div>
+            <label class="param-label">基准期间</label>
+            <input type="text" x-model="ep.base_period" @input="onParamChange()" class="param-input"
+                   placeholder="如 2026H1">
+          </div>
+
+          <!-- 基准利润 -->
+          <div>
+            <label class="param-label">基准利润（亿元）</label>
+            <input type="number" step="any" x-model.number="ep.base_profit" @input="onParamChange()"
+                   class="param-input">
+          </div>
+
+          <!-- 基准价格 -->
+          <div>
+            <label class="param-label">基准原材料价格</label>
+            <input type="number" step="any" x-model.number="ep.base_commodity_price" @input="onParamChange()"
+                   class="param-input">
+          </div>
+
+          <!-- 敏感系数 -->
+          <div>
+            <label class="param-label">敏感系数</label>
+            <input type="number" step="any" x-model.number="ep.sensitivity" @input="onParamChange()"
+                   class="param-input">
+          </div>
+
+          <!-- 原材料（只读） -->
+          <div class="pt-2 border-t border-gray-100">
+            <label class="param-label mb-1">原材料</label>
+            <template x-for="c in currentModel()?.commodities || []" :key="c.symbol">
+              <div class="flex items-center gap-2 text-xs text-gray-500 py-1">
+                <span class="w-1.5 h-1.5 rounded-full bg-gray-400 flex-shrink-0"></span>
+                <span x-text="c.name" class="text-gray-700"></span>
+                <span x-text="c.symbol" class="font-mono text-gray-400"></span>
+                <span x-text="c.source" class="text-gray-400"></span>
+              </div>
+            </template>
+          </div>
         </div>
 
-        <!-- ECharts 图表 -->
-        <div class="p-4">
-          <div :id="'chart-' + model.stock_id" style="height: 280px;"></div>
-        </div>
-
-        <!-- 三场景汇总表 -->
-        <div class="px-4 pb-4">
-          <table class="w-full text-sm">
-            <thead>
-              <tr class="text-gray-500 text-xs">
-                <th class="text-left py-1">场景</th>
-                <th class="text-right py-1">利润</th>
-                <th class="text-right py-1">价格窗口</th>
-                <th class="text-right py-1">原材料价格</th>
-              </tr>
-            </thead>
-            <tbody>
-              <template x-for="s in profitData[model.stock_id]?.summary || []" :key="s.scenario">
-                <tr class="border-t border-gray-50">
-                  <td class="py-2 text-gray-700" x-text="s.scenario"></td>
-                  <td class="py-2 text-right font-medium" x-text="s.annualized_profit.toFixed(2) + ' 亿元'"></td>
-                  <td class="py-2 text-right text-gray-500 text-xs" x-text="s.date_range"></td>
-                  <td class="py-2 text-right text-gray-500 text-xs">
-                    <template x-for="(price, sym) in s.commodity_prices" :key="sym">
-                      <span class="block" x-text="sym + ': ' + price.toFixed(2)"></span>
-                    </template>
-                  </td>
-                </tr>
-              </template>
-            </tbody>
-          </table>
+        <!-- 按钮 -->
+        <div class="flex gap-2 mt-5">
+          <button @click="saveParams()" :disabled="!dirty || saving"
+                  class="flex-1 py-2 rounded-lg text-sm font-medium transition-colors"
+                  :class="dirty ? 'bg-gray-800 hover:bg-gray-900 text-white' : 'bg-gray-100 text-gray-400 cursor-not-allowed'">
+            <span x-show="!saving">保存</span>
+            <span x-show="saving">保存中...</span>
+          </button>
+          <button @click="resetParams()" :disabled="!dirty"
+                  class="px-4 py-2 rounded-lg text-sm font-medium transition-colors"
+                  :class="dirty ? 'bg-gray-100 hover:bg-gray-200 text-gray-700' : 'bg-gray-50 text-gray-300 cursor-not-allowed'">
+            重置
+          </button>
         </div>
       </div>
-    </template>
+    </div>
+
+    <!-- 三场景汇总表 -->
+    <div class="border-t border-gray-200 px-4 py-3">
+      <table class="w-full text-sm">
+        <thead>
+          <tr class="text-gray-400 text-xs uppercase tracking-wider">
+            <th class="text-left py-2 font-medium">场景</th>
+            <th class="text-right py-2 font-medium">年化利润</th>
+            <th class="text-right py-2 font-medium">价格窗口</th>
+            <th class="text-right py-2 font-medium">原材料价格</th>
+          </tr>
+        </thead>
+        <tbody>
+          <template x-for="s in computedSummary" :key="s.scenario">
+            <tr class="border-t border-gray-100 scenario-row">
+              <td class="py-2.5 text-gray-700" x-text="s.scenario"></td>
+              <td class="py-2.5 text-right font-semibold tabular-nums" x-text="s.annualized_profit.toFixed(2) + ' 亿元'"></td>
+              <td class="py-2.5 text-right text-gray-400 text-xs" x-text="s.date_range"></td>
+              <td class="py-2.5 text-right text-gray-400 text-xs font-mono">
+                <template x-for="(price, sym) in s.commodity_prices" :key="sym">
+                  <span class="block" x-text="sym + ': ' + price.toFixed(2)"></span>
+                </template>
+              </td>
+            </tr>
+          </template>
+        </tbody>
+      </table>
+    </div>
   </div>
 </div>
 
 <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.1/dist/echarts.min.js" crossorigin="anonymous"></script>
 <script>
 function profitDashboard() {
+  const MULT = { H1x2: 2, Qx4: 4, annual: 1 };
+
   return {
     models: [],
-    profitData: {},
+    rawDaily: {},       // 原始价格数据 { stockId: [{date, commodity_prices}] }
+    savedParams: {},    // 上次保存的参数
+    ep: {},             // 当前编辑中的参数 (editParams for activeTab)
+    activeTab: '',
     loading: true,
     refreshing: false,
+    saving: false,
+    dirty: false,
+    justSaved: false,
+    computedDaily: [],  // 重算后的 daily
+    computedSummary: [],// 重算后的三场景
 
     async init() {
       const resp = await fetch('/api/profit/models');
       this.models = await resp.json();
       this.loading = false;
-      for (const model of this.models) {
-        await this.loadProfitData(model.stock_id);
+      if (this.models.length === 0) return;
+
+      // 初始化所有模型的参数和数据
+      for (const m of this.models) {
+        await this.loadRawData(m.stock_id);
+        this.savedParams[m.stock_id] = this._extractParams(m);
       }
+      this.switchTab(this.models[0].stock_id);
     },
 
-    async loadProfitData(stockId) {
+    _extractParams(model) {
+      const p = model.parameters || {};
+      return {
+        annualization: model.annualization || 'Qx4',
+        base_period: model.base_period || '',
+        base_profit: p.base_profit ?? p.base_commodity_price ?? 0,
+        base_commodity_price: p.base_commodity_price ?? 0,
+        sensitivity: p.sensitivity ?? 0,
+      };
+      // fix: base_profit should use p.base_profit
+    },
+
+    async loadRawData(stockId) {
       const resp = await fetch(`/api/profit/${stockId}`);
       const data = await resp.json();
-      this.profitData[stockId] = data;
-      this.$nextTick(() => this.renderChart(stockId, data));
+      // 保存原始价格数据（只需要 date + commodity_prices）
+      this.rawDaily[stockId] = (data.daily || []).map(d => ({
+        date: d.date,
+        commodity_prices: d.commodity_prices,
+      }));
     },
 
-    renderChart(stockId, data) {
-      const el = document.getElementById('chart-' + stockId);
-      if (!el || !data.daily || data.daily.length === 0) return;
-      // 复用已有实例或创建新实例，避免 resize listener 泄漏
+    switchTab(stockId) {
+      this.activeTab = stockId;
+      const saved = this.savedParams[stockId];
+      this.ep = { ...saved };
+      this.dirty = false;
+      this.justSaved = false;
+      this.recalculate();
+      this.$nextTick(() => this.renderChart());
+    },
+
+    currentModel() {
+      return this.models.find(m => m.stock_id === this.activeTab);
+    },
+
+    onParamChange() {
+      const saved = this.savedParams[this.activeTab];
+      this.dirty = JSON.stringify(this.ep) !== JSON.stringify(saved);
+      this.justSaved = false;
+      this.recalculate();
+      this.$nextTick(() => this.renderChart());
+    },
+
+    // ---- 前端即时重算 ----
+
+    recalculate() {
+      const raw = this.rawDaily[this.activeTab] || [];
+      if (raw.length === 0) { this.computedDaily = []; this.computedSummary = []; return; }
+
+      const mult = MULT[this.ep.annualization] || 1;
+      const bp = Number(this.ep.base_profit) || 0;
+      const bcp = Number(this.ep.base_commodity_price) || 0;
+      const sens = Number(this.ep.sensitivity) || 0;
+
+      // 获取主 commodity symbol
+      const model = this.currentModel();
+      const primarySym = model?.commodities?.[0]?.symbol;
+
+      let runSum = 0, runCount = 0;
+      const daily = raw.map(d => {
+        const price = primarySym ? (d.commodity_prices?.[primarySym] ?? bcp) : bcp;
+        const periodProfit = bp + (price - bcp) * sens;
+        const annProfit = periodProfit * mult;
+        runSum += annProfit;
+        runCount++;
+        return {
+          date: d.date,
+          annualized_profit: Math.round(annProfit * 100) / 100,
+          ytd_avg_annualized_profit: Math.round((runSum / runCount) * 100) / 100,
+          commodity_prices: d.commodity_prices || {},
+        };
+      });
+
+      this.computedDaily = daily;
+      this._computeSummary(daily);
+    },
+
+    _computeSummary(daily) {
+      if (daily.length === 0) { this.computedSummary = []; return; }
+
+      const latest = daily[daily.length - 1];
+
+      // 最近1个月：按日期过滤
+      const latestDate = latest.date;
+      let m = parseInt(latestDate.slice(5, 7));
+      let y = parseInt(latestDate.slice(0, 4));
+      let d = latestDate.slice(8);
+      if (m > 1) { m--; } else { m = 12; y--; }
+      const oneMonthAgo = `${y}-${String(m).padStart(2,'0')}-${d}`;
+      let lastMonth = daily.filter(r => r.date >= oneMonthAgo);
+      if (lastMonth.length === 0) lastMonth = daily.slice(-30);
+
+      const avgProfit1m = lastMonth.reduce((s, r) => s + r.annualized_profit, 0) / lastMonth.length;
+      const avgPrices1m = this._avgPrices(lastMonth);
+
+      const avgPricesYtd = this._avgPrices(daily);
+
+      this.computedSummary = [
+        {
+          scenario: '最新价格',
+          annualized_profit: latest.annualized_profit,
+          commodity_prices: latest.commodity_prices,
+          date_range: `${latest.date} 至 ${latest.date}`,
+        },
+        {
+          scenario: '最近1个月均价',
+          annualized_profit: Math.round(avgProfit1m * 100) / 100,
+          commodity_prices: avgPrices1m,
+          date_range: `${lastMonth[0].date} 至 ${lastMonth[lastMonth.length-1].date}`,
+        },
+        {
+          scenario: '年初至今均价年化',
+          annualized_profit: latest.ytd_avg_annualized_profit,
+          commodity_prices: avgPricesYtd,
+          date_range: `${daily[0].date} 至 ${daily[daily.length-1].date}`,
+        },
+      ];
+    },
+
+    _avgPrices(rows) {
+      if (rows.length === 0) return {};
+      const sums = {};
+      const counts = {};
+      for (const r of rows) {
+        for (const [sym, p] of Object.entries(r.commodity_prices || {})) {
+          sums[sym] = (sums[sym] || 0) + p;
+          counts[sym] = (counts[sym] || 0) + 1;
+        }
+      }
+      const avg = {};
+      for (const sym of Object.keys(sums)) {
+        avg[sym] = Math.round((sums[sym] / counts[sym]) * 100) / 100;
+      }
+      return avg;
+    },
+
+    // ---- 图表渲染 ----
+
+    renderChart() {
+      const el = document.getElementById('main-chart');
+      if (!el || this.computedDaily.length === 0) return;
       let chart = echarts.getInstanceByDom(el);
       if (chart) chart.dispose();
       chart = echarts.init(el);
-      const dates = data.daily.map(d => d.date.slice(5));
+
+      const dates = this.computedDaily.map(d => d.date.slice(5));
       chart.setOption({
-        tooltip: { trigger: 'axis' },
-        legend: { data: ['按当日价格年化利润', '年内均价年化利润'], top: 0, textStyle: { fontSize: 11 } },
-        grid: { left: 60, right: 20, top: 35, bottom: 25 },
-        xAxis: { type: 'category', data: dates, axisLabel: { fontSize: 10 } },
-        yAxis: { type: 'value', axisLabel: { fontSize: 10 } },
+        tooltip: {
+          trigger: 'axis',
+          backgroundColor: 'rgba(255,255,255,0.96)',
+          borderColor: '#e5e7eb',
+          textStyle: { color: '#374151', fontSize: 12 },
+        },
+        legend: {
+          data: ['按当日价格年化利润', '年内均价年化利润'],
+          top: 0, textStyle: { fontSize: 11, color: '#6b7280' },
+        },
+        grid: { left: 55, right: 16, top: 35, bottom: 25 },
+        xAxis: {
+          type: 'category', data: dates, boundaryGap: false,
+          axisLabel: { fontSize: 10, color: '#9ca3af' },
+          axisLine: { lineStyle: { color: '#e5e7eb' } },
+          axisTick: { show: false },
+        },
+        yAxis: {
+          type: 'value',
+          axisLabel: { fontSize: 10, color: '#9ca3af' },
+          splitLine: { lineStyle: { color: '#f3f4f6' } },
+          axisLine: { show: false },
+          axisTick: { show: false },
+        },
         series: [
           {
             name: '按当日价格年化利润',
             type: 'line', smooth: true, symbol: 'none',
             lineStyle: { color: '#C07A3E', width: 2 },
             itemStyle: { color: '#C07A3E' },
-            data: data.daily.map(d => d.annualized_profit),
+            areaStyle: { color: 'rgba(192,122,62,0.06)' },
+            data: this.computedDaily.map(d => d.annualized_profit),
           },
           {
             name: '年内均价年化利润',
             type: 'line', smooth: true, symbol: 'none',
             lineStyle: { color: '#3B7A8A', width: 2 },
             itemStyle: { color: '#3B7A8A' },
-            data: data.daily.map(d => d.ytd_avg_annualized_profit),
+            data: this.computedDaily.map(d => d.ytd_avg_annualized_profit),
           },
         ],
       });
-      window.addEventListener('resize', () => chart.resize());
+
+      const ro = new ResizeObserver(() => chart.resize());
+      ro.observe(el);
+    },
+
+    // ---- 保存 / 重置 ----
+
+    async saveParams() {
+      this.saving = true;
+      const model = this.currentModel();
+      const payload = {
+        stock_name: model.stock_name,
+        commodities: model.commodities,
+        annualization: this.ep.annualization,
+        base_period: this.ep.base_period,
+        parameters: {
+          base_profit: Number(this.ep.base_profit),
+          base_commodity_price: Number(this.ep.base_commodity_price),
+          sensitivity: Number(this.ep.sensitivity),
+        },
+      };
+      await fetch(`/api/profit/${this.activeTab}/model`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      this.savedParams[this.activeTab] = { ...this.ep };
+      // 同步 models 中的数据
+      if (model) {
+        model.annualization = this.ep.annualization;
+        model.base_period = this.ep.base_period;
+        model.parameters = payload.parameters;
+      }
+      this.dirty = false;
+      this.saving = false;
+      this.justSaved = true;
+      setTimeout(() => { this.justSaved = false; }, 2000);
+    },
+
+    resetParams() {
+      const saved = this.savedParams[this.activeTab];
+      this.ep = { ...saved };
+      this.dirty = false;
+      this.recalculate();
+      this.$nextTick(() => this.renderChart());
     },
 
     async refreshAll() {
       this.refreshing = true;
       await fetch('/api/profit/refresh', { method: 'POST' });
-      for (const model of this.models) {
-        await this.loadProfitData(model.stock_id);
+      for (const m of this.models) {
+        await this.loadRawData(m.stock_id);
       }
+      this.recalculate();
+      this.$nextTick(() => this.renderChart());
       this.refreshing = false;
     },
   };
