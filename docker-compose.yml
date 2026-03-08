@@ -3,8 +3,8 @@ services:
     build:
       context: .
       args:
-        - HTTP_PROXY=${HTTP_PROXY:-}
-        - HTTPS_PROXY=${HTTPS_PROXY:-}
+        - HTTP_PROXY=http://host.docker.internal:7890
+        - HTTPS_PROXY=http://host.docker.internal:7890
     ports:
       - "5100:5000"
     volumes:
