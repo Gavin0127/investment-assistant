@@ -1,0 +1,144 @@
+{% extends "base.html" %}
+{% block title %}利润跟踪{% endblock %}
+{% block content %}
+<div x-data="profitDashboard()" x-init="init()">
+  <!-- 顶部操作栏 -->
+  <div class="flex justify-between items-center mb-6">
+    <h1 class="text-2xl font-bold text-gray-900">利润跟踪</h1>
+    <button @click="refreshAll()" :disabled="refreshing"
+            class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm disabled:opacity-50">
+      <span x-show="!refreshing">刷新价格数据</span>
+      <span x-show="refreshing">刷新中...</span>
+    </button>
+  </div>
+
+  <!-- 加载中 -->
+  <div x-show="loading" class="text-center py-12 text-gray-500">加载中...</div>
+
+  <!-- 空状态 -->
+  <div x-show="models.length === 0 && !loading" class="bg-white rounded-xl shadow-sm border border-gray-100 p-12 text-center">
+    <p class="text-gray-500">暂无利润模型配置</p>
+    <p class="text-sm text-gray-400 mt-2">在股票详情页中配置利润模型后，数据将在此展示</p>
+  </div>
+
+  <!-- 股票卡片网格 -->
+  <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+    <template x-for="model in models" :key="model.stock_id">
+      <div class="bg-white rounded-xl shadow-sm border border-gray-100">
+        <!-- 卡片头部 -->
+        <div class="p-4 border-b border-gray-100">
+          <div class="flex justify-between items-center">
+            <a :href="'/stock/' + model.stock_id" class="text-lg font-bold text-gray-900 hover:text-blue-600" x-text="model.stock_name"></a>
+            <span class="text-xs text-gray-500" x-text="model.annualization + ' · ' + model.base_period"></span>
+          </div>
+          <p class="text-xs text-gray-400 mt-1" x-text="model.commodities.map(c => c.name).join(' + ')"></p>
+        </div>
+
+        <!-- ECharts 图表 -->
+        <div class="p-4">
+          <div :id="'chart-' + model.stock_id" style="height: 280px;"></div>
+        </div>
+
+        <!-- 三场景汇总表 -->
+        <div class="px-4 pb-4">
+          <table class="w-full text-sm">
+            <thead>
+              <tr class="text-gray-500 text-xs">
+                <th class="text-left py-1">场景</th>
+                <th class="text-right py-1">利润</th>
+                <th class="text-right py-1">价格窗口</th>
+                <th class="text-right py-1">原材料价格</th>
+              </tr>
+            </thead>
+            <tbody>
+              <template x-for="s in profitData[model.stock_id]?.summary || []" :key="s.scenario">
+                <tr class="border-t border-gray-50">
+                  <td class="py-2 text-gray-700" x-text="s.scenario"></td>
+                  <td class="py-2 text-right font-medium" x-text="s.annualized_profit.toFixed(2) + ' 亿元'"></td>
+                  <td class="py-2 text-right text-gray-500 text-xs" x-text="s.date_range"></td>
+                  <td class="py-2 text-right text-gray-500 text-xs">
+                    <template x-for="(price, sym) in s.commodity_prices" :key="sym">
+                      <span class="block" x-text="sym + ': ' + price.toFixed(2)"></span>
+                    </template>
+                  </td>
+                </tr>
+              </template>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </template>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/echarts@5.5.1/dist/echarts.min.js" crossorigin="anonymous"></script>
+<script>
+function profitDashboard() {
+  return {
+    models: [],
+    profitData: {},
+    loading: true,
+    refreshing: false,
+
+    async init() {
+      const resp = await fetch('/api/profit/models');
+      this.models = await resp.json();
+      this.loading = false;
+      for (const model of this.models) {
+        await this.loadProfitData(model.stock_id);
+      }
+    },
+
+    async loadProfitData(stockId) {
+      const resp = await fetch(`/api/profit/${stockId}`);
+      const data = await resp.json();
+      this.profitData[stockId] = data;
+      this.$nextTick(() => this.renderChart(stockId, data));
+    },
+
+    renderChart(stockId, data) {
+      const el = document.getElementById('chart-' + stockId);
+      if (!el || !data.daily || data.daily.length === 0) return;
+      // 复用已有实例或创建新实例，避免 resize listener 泄漏
+      let chart = echarts.getInstanceByDom(el);
+      if (chart) chart.dispose();
+      chart = echarts.init(el);
+      const dates = data.daily.map(d => d.date.slice(5));
+      chart.setOption({
+        tooltip: { trigger: 'axis' },
+        legend: { data: ['按当日价格年化利润', '年内均价年化利润'], top: 0, textStyle: { fontSize: 11 } },
+        grid: { left: 60, right: 20, top: 35, bottom: 25 },
+        xAxis: { type: 'category', data: dates, axisLabel: { fontSize: 10 } },
+        yAxis: { type: 'value', axisLabel: { fontSize: 10 } },
+        series: [
+          {
+            name: '按当日价格年化利润',
+            type: 'line', smooth: true, symbol: 'none',
+            lineStyle: { color: '#C07A3E', width: 2 },
+            itemStyle: { color: '#C07A3E' },
+            data: data.daily.map(d => d.annualized_profit),
+          },
+          {
+            name: '年内均价年化利润',
+            type: 'line', smooth: true, symbol: 'none',
+            lineStyle: { color: '#3B7A8A', width: 2 },
+            itemStyle: { color: '#3B7A8A' },
+            data: data.daily.map(d => d.ytd_avg_annualized_profit),
+          },
+        ],
+      });
+      window.addEventListener('resize', () => chart.resize());
+    },
+
+    async refreshAll() {
+      this.refreshing = true;
+      await fetch('/api/profit/refresh', { method: 'POST' });
+      for (const model of this.models) {
+        await this.loadProfitData(model.stock_id);
+      }
+      this.refreshing = false;
+    },
+  };
+}
+</script>
+{% endblock %}

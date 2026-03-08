@@ -37,19 +37,39 @@ class Storage:
         with open(self.config_path, "w", encoding="utf-8") as f:
             json.dump(config, f, ensure_ascii=False, indent=2)
 
+    def get_llm_provider(self) -> str:
+        """获取 LLM provider，环境变量优先，config 兜底，默认 gemini"""
+        return (os.getenv("LLM_PROVIDER")
+                or self.get_config().get("llm_provider")
+                or "gemini")
+
+    def get_llm_model(self) -> Optional[str]:
+        """获取用户自定义的 LLM 模型名（可选，None 则用 provider 默认值）"""
+        return os.getenv("LLM_MODEL") or self.get_config().get("llm_model")
+
+    def get_llm_base_url(self) -> Optional[str]:
+        """获取自定义 LLM base URL（可选，None 则用 provider 默认值）"""
+        return os.getenv("LLM_BASE_URL") or self.get_config().get("llm_base_url")
+
     def get_api_key(self) -> Optional[str]:
-        """获取 API Key（OpenAI 优先，兼容旧版 Gemini 配置）"""
+        """根据当前 provider 获取对应的 API Key"""
+        provider = self.get_llm_provider()
         config = self.get_config()
-        return (config.get("openai_api_key")
-                or os.getenv("OPENAI_API_KEY")
-                or config.get("gemini_api_key")
-                or os.getenv("GEMINI_API_KEY"))
+        if provider == "gemini":
+            return (config.get("gemini_api_key")
+                    or os.getenv("GEMINI_API_KEY"))
+        else:
+            return (config.get("openai_api_key")
+                    or os.getenv("OPENAI_API_KEY"))
 
     def set_api_key(self, api_key: str):
-        """设置 API Key（写入 openai_api_key，清理旧版 key）"""
+        """按当前 provider 写入对应的 API Key"""
+        provider = self.get_llm_provider()
         config = self.get_config()
-        config["openai_api_key"] = api_key
-        config.pop("gemini_api_key", None)
+        if provider == "gemini":
+            config["gemini_api_key"] = api_key
+        else:
+            config["openai_api_key"] = api_key
         self.save_config(config)
 
     # ==================== 总体 Playbook ====================

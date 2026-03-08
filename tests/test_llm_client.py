@@ -1,4 +1,4 @@
-"""Tests for core.openai_client.OpenAIClient."""
+"""Tests for core.openai_client.LLMClient."""
 
 from __future__ import annotations
 
@@ -13,27 +13,82 @@ import pytest
 # Construction
 # ---------------------------------------------------------------------------
 
-class TestOpenAIClientInit:
-    def test_requires_api_key(self):
+class TestLLMClientInit:
+    def test_requires_api_key_openai(self):
         with patch.dict(os.environ, {}, clear=True):
             os.environ.pop("OPENAI_API_KEY", None)
-            from core.openai_client import OpenAIClient
+            from core.openai_client import LLMClient
             with pytest.raises(ValueError, match="OPENAI_API_KEY"):
-                OpenAIClient(api_key=None)
+                LLMClient(api_key=None, provider="openai")
 
-    def test_accepts_explicit_key(self):
+    def test_requires_api_key_gemini(self):
+        with patch.dict(os.environ, {}, clear=True):
+            os.environ.pop("GEMINI_API_KEY", None)
+            from core.openai_client import LLMClient
+            with pytest.raises(ValueError, match="GEMINI_API_KEY"):
+                LLMClient(api_key=None, provider="gemini")
+
+    def test_accepts_explicit_key_openai(self):
         with patch("core.openai_client.OpenAI"):
-            from core.openai_client import OpenAIClient
-            c = OpenAIClient(api_key="sk-test")
+            from core.openai_client import LLMClient
+            c = LLMClient(api_key="sk-test", provider="openai")
             assert c.api_key == "sk-test"
-            assert c.model == "gpt-5.2"
+            assert c.model == "gpt-5.4"
+            assert c.provider == "openai"
 
-    def test_env_key_fallback(self):
+    def test_accepts_explicit_key_gemini(self):
+        with patch("core.openai_client.OpenAI"):
+            from core.openai_client import LLMClient
+            c = LLMClient(api_key="gem-test", provider="gemini")
+            assert c.api_key == "gem-test"
+            assert c.model == "gemini-3.1-pro-preview"
+            assert c.provider == "gemini"
+
+    def test_default_provider_is_gemini(self):
+        with patch("core.openai_client.OpenAI"):
+            from core.openai_client import LLMClient
+            c = LLMClient(api_key="gem-test")
+            assert c.provider == "gemini"
+            assert c.model == "gemini-3.1-pro-preview"
+
+    def test_custom_model_override(self):
+        with patch("core.openai_client.OpenAI"):
+            from core.openai_client import LLMClient
+            c = LLMClient(api_key="gem-test", model="gemini-3.1-pro", provider="gemini")
+            assert c.model == "gemini-3.1-pro"
+
+    def test_gemini_sets_base_url(self):
+        with patch("core.openai_client.OpenAI") as mock_cls:
+            from core.openai_client import LLMClient
+            LLMClient(api_key="gem-test", provider="gemini")
+            call_kwargs = mock_cls.call_args.kwargs
+            assert "base_url" in call_kwargs
+            assert "generativelanguage.googleapis.com" in call_kwargs["base_url"]
+
+    def test_openai_no_base_url(self):
+        with patch("core.openai_client.OpenAI") as mock_cls:
+            from core.openai_client import LLMClient
+            LLMClient(api_key="sk-test", provider="openai")
+            call_kwargs = mock_cls.call_args.kwargs
+            assert "base_url" not in call_kwargs
+
+    def test_env_key_fallback_openai(self):
         with patch.dict(os.environ, {"OPENAI_API_KEY": "sk-env"}):
             with patch("core.openai_client.OpenAI"):
-                from core.openai_client import OpenAIClient
-                c = OpenAIClient()
+                from core.openai_client import LLMClient
+                c = LLMClient(provider="openai")
                 assert c.api_key == "sk-env"
+
+    def test_env_key_fallback_gemini(self):
+        with patch.dict(os.environ, {"GEMINI_API_KEY": "gem-env"}):
+            with patch("core.openai_client.OpenAI"):
+                from core.openai_client import LLMClient
+                c = LLMClient(provider="gemini")
+                assert c.api_key == "gem-env"
+
+    def test_backward_compat_alias(self):
+        from core.openai_client import OpenAIClient, LLMClient
+        assert OpenAIClient is LLMClient
 
 
 # ---------------------------------------------------------------------------
@@ -58,6 +113,10 @@ class TestChat:
         messages = call_args.kwargs.get("messages") or call_args[1].get("messages")
         roles = [m["role"] for m in messages]
         assert "assistant" in roles  # 'model' mapped to 'assistant'
+
+    def test_gemini_chat_works(self, mock_gemini_client):
+        result = mock_gemini_client.chat("hello")
+        assert result == "mock response"
 
 
 # ---------------------------------------------------------------------------
