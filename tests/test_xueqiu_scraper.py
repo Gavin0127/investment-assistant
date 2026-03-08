@@ -97,29 +97,38 @@ class TestNeedsFullFetch:
 
 
 class TestBrowserFetchApi:
+    """_browser_fetch_api 现在用 page.goto() 导航获取 JSON。"""
+
     def test_parse_json_response(self, scraper):
-        """fetch 返回 JSON 时正确解析。"""
+        """goto 返回 JSON 时正确解析。"""
         import json as _json
         mock_page = MagicMock()
-        # _browser_fetch_api 现在期望 evaluate 返回 {status, text} 包装格式
-        inner = _json.dumps({"statuses": [{"id": 1}]})
-        mock_page.evaluate.return_value = _json.dumps({"status": 200, "text": inner})
+        mock_resp = MagicMock()
+        mock_resp.status = 200
+        mock_page.goto.return_value = mock_resp
+        mock_page.evaluate.return_value = _json.dumps({"statuses": [{"id": 1}]})
+        mock_page.content.return_value = ""
         result = scraper._browser_fetch_api(mock_page, "/test", {"page": 1})
         assert result == {"statuses": [{"id": 1}]}
 
     def test_detect_waf_html(self, scraper):
-        """fetch 返回 HTML 时识别为 WAF 拦截。"""
-        import json as _json
+        """goto 返回 WAF challenge 页面时识别为拦截。"""
         mock_page = MagicMock()
-        html = '<textarea id="renderData">...</textarea><!doctype html>'
-        mock_page.evaluate.return_value = _json.dumps({"status": 200, "text": html})
+        mock_resp = MagicMock()
+        mock_resp.status = 200
+        mock_page.goto.return_value = mock_resp
+        mock_page.evaluate.return_value = ""  # body.innerText 为空
+        mock_page.content.return_value = '<meta name="aliyun_waf_aa">'
         result = scraper._browser_fetch_api(mock_page, "/test", {"page": 1})
         assert result is None
 
     def test_detect_empty_response(self, scraper):
-        """fetch 返回空字符串时识别为失败。"""
-        import json as _json
+        """goto 返回空内容时识别为失败。"""
         mock_page = MagicMock()
-        mock_page.evaluate.return_value = _json.dumps({"status": 200, "text": ""})
+        mock_resp = MagicMock()
+        mock_resp.status = 200
+        mock_page.goto.return_value = mock_resp
+        mock_page.evaluate.return_value = ""
+        mock_page.content.return_value = ""
         result = scraper._browser_fetch_api(mock_page, "/test", {"page": 1})
         assert result is None

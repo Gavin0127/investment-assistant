@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import re
+import sys
 import time
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -18,6 +19,11 @@ logger = logging.getLogger(__name__)
 _BASE_URL = "https://xueqiu.com"
 _TIMELINE_API = "/v4/statuses/user_timeline.json"
 _SHOW_API = "/statuses/show.json"
+
+
+def _log(msg: str):
+    """写入 stderr 并 flush，确保 Flask debug 模式下日志可见。"""
+    print(f"[xueqiu] {msg}", file=sys.stderr, flush=True)
 
 
 class XueqiuScraper:
@@ -42,47 +48,62 @@ class XueqiuScraper:
         self.sync_count: int = 0
 
     def login_and_sync(self, user_id: int, headless: bool = False):
-        """Open browser for login, then sync all posts."""
+        """直接用 patchright 控制浏览器，完全掌控生命周期。"""
         self.sync_status = "logging_in"
-        self.sync_progress = "等待登录..."
+        self.sync_progress = "正在启动浏览器..."
+        _log("login_and_sync: starting browser...")
         try:
-            from scrapling.fetchers import StealthyFetcher
+            from patchright.sync_api import sync_playwright
 
-            def login_then_sync(page):
-                # 检查是否已有登录 cookie（user_data_dir 持久化的）
-                cookies = page.context.cookies()
-                cookie_dict = {c["name"]: c["value"] for c in cookies}
-                if "u" in cookie_dict:
-                    logger.info("Reusing saved session, cookies: %s", list(cookie_dict.keys()))
-                    self._cookies = cookie_dict
-                    self._sync_all(page, user_id)
-                    return page
+            with sync_playwright() as pw:
+                context = pw.chromium.launch_persistent_context(
+                    user_data_dir=self._user_data_dir,
+                    headless=headless,
+                    args=["--disable-blink-features=AutomationControlled"],
+                )
+                page = context.new_page()
+                page.set_default_timeout(120_000)  # 2 分钟超时，给足操作时间
 
-                # 需要扫码登录
-                self.sync_progress = "请在浏览器中登录雪球..."
-                for _ in range(300):  # 5 min timeout
-                    cookies = page.context.cookies()
+                try:
+                    # 导航到雪球首页
+                    self.sync_progress = "正在打开雪球..."
+                    _log("navigating to xueqiu.com...")
+                    page.goto(f"{_BASE_URL}/", wait_until="domcontentloaded", timeout=30000)
+                    page.wait_for_timeout(3000)
+
+                    # 检查是否已有登录 cookie
+                    cookies = context.cookies()
                     cookie_dict = {c["name"]: c["value"] for c in cookies}
                     if "u" in cookie_dict:
-                        logger.info("Login detected, cookies: %s", list(cookie_dict.keys()))
-                        page.wait_for_timeout(2000)
-                        self._cookies = {c["name"]: c["value"] for c in page.context.cookies()}
-                        self._sync_all(page, user_id)
-                        return page
-                    page.wait_for_timeout(1000)
-                raise TimeoutError("登录超时（5分钟）")
+                        _log(f"Reusing saved session, cookie keys: {list(cookie_dict.keys())}")
+                        self._cookies = cookie_dict
+                    else:
+                        # 等待扫码登录
+                        self.sync_progress = "请在浏览器中扫码登录雪球..."
+                        _log("waiting for login (5 min timeout)...")
+                        for i in range(300):
+                            cookies = context.cookies()
+                            cookie_dict = {c["name"]: c["value"] for c in cookies}
+                            if "u" in cookie_dict:
+                                _log(f"Login detected at iteration {i}")
+                                page.wait_for_timeout(2000)
+                                self._cookies = {c["name"]: c["value"] for c in context.cookies()}
+                                break
+                            page.wait_for_timeout(1000)
+                        else:
+                            raise TimeoutError("登录超时（5分钟）")
 
-            StealthyFetcher.fetch(
-                f"{_BASE_URL}/",
-                headless=headless,
-                timeout=60000,
-                user_data_dir=self._user_data_dir,
-                page_action=login_then_sync,
-            )
+                    # 登录成功，开始同步
+                    self._sync_all(page, user_id)
+
+                finally:
+                    _log("closing browser context...")
+                    context.close()
+
         except Exception as e:
             self.sync_status = "error"
             self.sync_progress = f"错误: {e}"
-            logger.error("Sync failed: %s", e)
+            _log(f"login_and_sync error: {e}")
             raise
 
     def _sync_all(self, page, user_id: int):
@@ -96,6 +117,7 @@ class XueqiuScraper:
 
             last_id = self.db.get_latest_post_id()
             incremental = last_id is not None
+            _log(f"incremental={incremental}, last_id={last_id}")
             stop = False
             max_pages = 200
             waf_retries = 0
@@ -103,27 +125,27 @@ class XueqiuScraper:
             pg = 1
             while not stop and pg <= max_pages:
                 self.sync_progress = f"正在拉取第 {pg} 页..."
-                print(f"[xueqiu] Fetching timeline page {pg}")
+                _log(f"Fetching timeline page {pg}")
 
                 data = self._browser_fetch_api(
                     page, _TIMELINE_API, {"user_id": user_id, "page": pg}
                 )
                 if data is None:
                     if waf_retries < 3:
-                        print(f"[xueqiu] WAF retry {waf_retries + 1}/3")
+                        _log(f"WAF retry {waf_retries + 1}/3")
                         self._ensure_waf_ready(page)
                         waf_retries += 1
                         continue
-                    print("[xueqiu] WAF retries exhausted, stopping")
+                    _log("WAF retries exhausted, stopping")
                     break
                 waf_retries = 0
 
                 posts = self._parse_timeline(data)
                 if not posts:
-                    print(f"[xueqiu] No posts on page {pg}, stopping")
+                    _log(f"No posts on page {pg}, stopping")
                     break
 
-                print(f"[xueqiu] Page {pg}: {len(posts)} posts")
+                _log(f"Page {pg}: {len(posts)} posts")
                 for post in posts:
                     if incremental and self.db.get_post(post["id"]):
                         stop = True
@@ -152,7 +174,7 @@ class XueqiuScraper:
             # 批量下载图片
             if pending_images:
                 self.sync_progress = f"正在下载 {len(pending_images)} 张图片..."
-                print(f"[xueqiu] Downloading {len(pending_images)} images...")
+                _log(f"Downloading {len(pending_images)} images...")
                 for i, (post_id, url, seq) in enumerate(pending_images):
                     local = self._download_image(post_id, url, seq)
                     self.db.save_image(post_id, url, local, seq)
@@ -160,53 +182,110 @@ class XueqiuScraper:
                         self.sync_progress = f"图片 {i+1}/{len(pending_images)}"
 
         except Exception as e:
-            # scrapling 会吞掉 page_action 里的异常，所以这里必须自己处理
-            print(f"[xueqiu] _sync_all error: {e}")
+            _log(f"_sync_all error: {e}")
             self.sync_status = "error"
             self.sync_progress = f"同步出错: {e}"
-            raise  # re-raise 让 scrapling 的 log.error 也能记录
+            raise
 
         self.db.set_sync_state("last_sync_time", str(int(time.time())))
         self.db.set_sync_state("total_synced", str(total_saved))
         self.sync_status = "done"
         self.sync_progress = f"同步完成，共 {total_saved} 条"
-        print(f"[xueqiu] Sync complete: {total_saved} posts, {len(pending_images)} images")
+        _log(f"Sync complete: {total_saved} posts, {len(pending_images)} images")
 
     def _ensure_waf_ready(self, page):
-        """导航到雪球首页，等待 WAF JS Challenge 完成。"""
+        """导航到雪球首页，等待页面正常加载（非 WAF challenge 页面）。
+
+        雪球 WAF 机制：首次访问 API 返回含 JS challenge 的 HTML（<textarea id="renderData">），
+        浏览器执行 JS 后设置 WAF cookie，后续请求才返回正常 JSON。
+        策略：导航到首页，等待页面标题变为正常内容（非空白/challenge 页面）。
+        """
         self.sync_progress = "正在通过 WAF 验证..."
-        print("[xueqiu] _ensure_waf_ready: navigating to homepage...")
-        # 用 domcontentloaded 而非 networkidle — WAF challenge 页面持续有网络活动，
-        # networkidle 会等到超时。domcontentloaded 后再固定等待让 WAF JS 执行完毕。
+        _log("_ensure_waf_ready: navigating to homepage...")
         page.goto(f"{_BASE_URL}/", wait_until="domcontentloaded", timeout=30000)
-        page.wait_for_timeout(5000)
-        print("[xueqiu] _ensure_waf_ready: done waiting")
+
+        # 等待页面真正加载完成（最多 30 秒）
+        for i in range(30):
+            page.wait_for_timeout(1000)
+            try:
+                # 检查页面是否已经渲染出正常内容（雪球首页有 .home__stock-index 等元素）
+                has_content = page.evaluate("""
+                    () => {
+                        // 检查是否有正常页面内容（非 WAF challenge）
+                        return !!(
+                            document.querySelector('nav') ||
+                            document.querySelector('.nav') ||
+                            document.querySelector('[class*="stock"]') ||
+                            document.querySelector('[class*="home"]') ||
+                            document.title.includes('雪球')
+                        );
+                    }
+                """)
+                if has_content:
+                    _log(f"_ensure_waf_ready: page loaded after {i+1}s")
+                    # 额外等 2 秒让所有 JS 执行完
+                    page.wait_for_timeout(2000)
+                    return
+            except Exception:
+                pass
+            if i % 5 == 4:
+                title = page.title()
+                _log(f"_ensure_waf_ready: waiting... ({i+1}s, title={title!r})")
+
+        _log("_ensure_waf_ready: page not fully loaded after 30s, trying anyway")
+        cookies = page.context.cookies()
+        _log(f"_ensure_waf_ready: cookies={[c['name'] for c in cookies]}")
 
     def _browser_fetch_api(self, page, path: str, params: dict) -> Optional[dict]:
-        """在浏览器内用 fetch() 调 API，自动携带 WAF cookie。"""
+        """在浏览器内导航到 API URL 获取 JSON 数据。
+
+        阿里云 WAF 会拦截 fetch() XHR 请求，但允许浏览器直接导航。
+        策略：用 page.goto() 导航到 API URL，从页面 body 提取 JSON。
+        """
         url = f"{_BASE_URL}{path}?{urlencode(params)}"
         try:
-            resp_text = page.evaluate("""
-                async (url) => {
-                    const resp = await fetch(url, {
-                        credentials: 'include',
-                        headers: { 'Accept': 'application/json' }
-                    });
-                    const status = resp.status;
-                    const text = await resp.text();
-                    return JSON.stringify({status, text});
-                }
-            """, url)
-            wrapper = json.loads(resp_text)
-            status = wrapper.get("status", 0)
-            body = wrapper.get("text", "")
-            print(f"[xueqiu] fetch {path} → HTTP {status}, len={len(body)}, prefix={body[:100]!r}")
-            if not body or body.lstrip().startswith('<'):
-                print(f"[xueqiu] WAF blocked: {path}")
+            resp = page.goto(url, wait_until="domcontentloaded", timeout=30000)
+            status = resp.status if resp else 0
+            # 等待页面内容加载
+            page.wait_for_timeout(2000)
+
+            body = page.evaluate("() => document.body?.innerText || ''")
+            _log(f"goto {path} → HTTP {status}, len={len(body)}, prefix={body[:200]!r}")
+
+            if not body or not body.strip():
+                _log(f"empty body: {path}")
                 return None
-            return json.loads(body)
+
+            # 检查是否是 WAF challenge 页面
+            html = page.content()
+            if 'aliyun_waf_aa' in html or '_waf_' in html[:500]:
+                _log(f"WAF challenge page detected: {path}")
+                # 等待 WAF JS 执行完毕
+                page.wait_for_timeout(5000)
+                body = page.evaluate("() => document.body?.innerText || ''")
+                _log(f"after WAF wait: len={len(body)}, prefix={body[:200]!r}")
+                if not body or 'aliyun_waf_aa' in page.content()[:500]:
+                    _log(f"WAF still blocking: {path}")
+                    return None
+
+            try:
+                return json.loads(body)
+            except json.JSONDecodeError:
+                # body 可能包含额外的 HTML，尝试提取 JSON 部分
+                _log(f"JSON parse failed, trying to extract JSON from body")
+                # 尝试用 pre 标签内容（浏览器显示 JSON 时通常包裹在 pre 里）
+                pre_text = page.evaluate("""
+                    () => {
+                        const pre = document.querySelector('pre');
+                        return pre ? pre.textContent : '';
+                    }
+                """)
+                if pre_text:
+                    return json.loads(pre_text)
+                return None
+
         except Exception as e:
-            print(f"[xueqiu] fetch error: {path} — {e}")
+            _log(f"goto error: {path} — {e}")
             return None
 
     def _parse_timeline(self, data: dict) -> List[Dict]:
