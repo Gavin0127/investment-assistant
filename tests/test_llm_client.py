@@ -144,6 +144,18 @@ class TestChat:
         result = mock_gemini_client.chat("hello")
         assert result == "mock response"
 
+    def test_chat_with_custom_model(self, mock_openai_client):
+        result = mock_openai_client.chat("hello", model="custom-model")
+        assert result == "mock response"
+        call_kwargs = mock_openai_client.client.chat.completions.create.call_args
+        assert call_kwargs.kwargs["model"] == "custom-model"
+
+    def test_chat_with_system_custom_model(self, mock_openai_client):
+        result = mock_openai_client.chat_with_system("sys", "hello", model="custom-model")
+        assert result == "mock response"
+        call_kwargs = mock_openai_client.client.chat.completions.create.call_args
+        assert call_kwargs.kwargs["model"] == "custom-model"
+
 
 # ---------------------------------------------------------------------------
 # search (stub)

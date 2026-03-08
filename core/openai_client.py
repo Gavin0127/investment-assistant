@@ -73,8 +73,10 @@ class LLMClient:
             client_kwargs["base_url"] = resolved_base_url
         self.client = OpenAI(**client_kwargs)
 
-    def chat(self, prompt: str, history: Optional[List[Dict]] = None) -> str:
-        """普通对话"""
+    def chat(self, prompt: str, history: Optional[List[Dict]] = None,
+             model: Optional[str] = None) -> str:
+        """普通对话。model 可覆盖默认模型。"""
+        use_model = model or self.model
         messages: List[Dict[str, str]] = []
         if history:
             for msg in history:
@@ -87,15 +89,17 @@ class LLMClient:
         messages.append({"role": "user", "content": prompt})
 
         resp = self.client.chat.completions.create(
-            model=self.model,
+            model=use_model,
             messages=messages,
             timeout=120,
         )
         return resp.choices[0].message.content or ""
 
     def chat_with_system(self, system_prompt: str, user_message: str,
-                         history: Optional[List[Dict]] = None) -> str:
-        """带系统提示的对话"""
+                         history: Optional[List[Dict]] = None,
+                         model: Optional[str] = None) -> str:
+        """带系统提示的对话。model 可覆盖默认模型。"""
+        use_model = model or self.model
         messages: List[Dict[str, str]] = [{"role": "system", "content": system_prompt}]
 
         if history:
@@ -110,7 +114,7 @@ class LLMClient:
         messages.append({"role": "user", "content": user_message})
 
         resp = self.client.chat.completions.create(
-            model=self.model,
+            model=use_model,
             messages=messages,
             timeout=120,
         )
