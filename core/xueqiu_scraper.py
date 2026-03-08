@@ -88,83 +88,99 @@ class XueqiuScraper:
     def _sync_all(self, page, user_id: int):
         """用 fetch() 精确分页同步所有帖子。"""
         self.sync_status = "syncing"
-        self._ensure_waf_ready(page)
-
-        last_id = self.db.get_latest_post_id()
-        incremental = last_id is not None
         total_saved = 0
-        stop = False
-        pending_images: list = []  # [(post_id, url, seq), ...]
-        max_pages = 200
-        waf_retries = 0
+        pending_images: list = []
 
-        pg = 1
-        while not stop and pg <= max_pages:
-            self.sync_progress = f"正在拉取第 {pg} 页..."
-            logger.info("Fetching timeline page %d", pg)
+        try:
+            self._ensure_waf_ready(page)
 
-            data = self._browser_fetch_api(
-                page, _TIMELINE_API, {"user_id": user_id, "page": pg}
-            )
-            if data is None:
-                if waf_retries < 3:
-                    logger.warning("WAF retry %d/3", waf_retries + 1)
-                    self._ensure_waf_ready(page)
-                    waf_retries += 1
-                    continue
-                logger.error("WAF retries exhausted, stopping")
-                break
+            last_id = self.db.get_latest_post_id()
+            incremental = last_id is not None
+            stop = False
+            max_pages = 200
             waf_retries = 0
 
-            posts = self._parse_timeline(data)
-            if not posts:
-                break
+            pg = 1
+            while not stop and pg <= max_pages:
+                self.sync_progress = f"正在拉取第 {pg} 页..."
+                print(f"[xueqiu] Fetching timeline page {pg}")
 
-            for post in posts:
-                if incremental and self.db.get_post(post["id"]):
-                    stop = True
-                    continue
+                data = self._browser_fetch_api(
+                    page, _TIMELINE_API, {"user_id": user_id, "page": pg}
+                )
+                if data is None:
+                    if waf_retries < 3:
+                        print(f"[xueqiu] WAF retry {waf_retries + 1}/3")
+                        self._ensure_waf_ready(page)
+                        waf_retries += 1
+                        continue
+                    print("[xueqiu] WAF retries exhausted, stopping")
+                    break
+                waf_retries = 0
 
-                if self._needs_full_fetch(post):
-                    full = self._browser_fetch_api(
-                        page, _SHOW_API, {"id": post["id"]}
-                    )
-                    if full:
-                        post["text"] = full.get("text", post.get("text", ""))
-                        post["title"] = full.get("title", post.get("title"))
+                posts = self._parse_timeline(data)
+                if not posts:
+                    print(f"[xueqiu] No posts on page {pg}, stopping")
+                    break
 
-                img_urls = self._extract_image_urls(post.get("text"))
-                self.db.save_post(post)
-                for seq, url in enumerate(img_urls):
-                    pending_images.append((post["id"], url, seq))
+                print(f"[xueqiu] Page {pg}: {len(posts)} posts")
+                for post in posts:
+                    if incremental and self.db.get_post(post["id"]):
+                        stop = True
+                        continue
 
-                total_saved += 1
-                self.sync_count = total_saved
-                self.sync_progress = f"已保存 {total_saved} 条帖子"
+                    if self._needs_full_fetch(post):
+                        full = self._browser_fetch_api(
+                            page, _SHOW_API, {"id": post["id"]}
+                        )
+                        if full:
+                            post["text"] = full.get("text", post.get("text", ""))
+                            post["title"] = full.get("title", post.get("title"))
 
-            pg += 1
-            page.wait_for_timeout(1500)
+                    img_urls = self._extract_image_urls(post.get("text"))
+                    self.db.save_post(post)
+                    for seq, url in enumerate(img_urls):
+                        pending_images.append((post["id"], url, seq))
 
-        # 批量下载图片
-        if pending_images:
-            self.sync_progress = f"正在下载 {len(pending_images)} 张图片..."
-            for i, (post_id, url, seq) in enumerate(pending_images):
-                local = self._download_image(post_id, url, seq)
-                self.db.save_image(post_id, url, local, seq)
-                if (i + 1) % 10 == 0:
-                    self.sync_progress = f"图片 {i+1}/{len(pending_images)}"
+                    total_saved += 1
+                    self.sync_count = total_saved
+                    self.sync_progress = f"已保存 {total_saved} 条帖子"
+
+                pg += 1
+                page.wait_for_timeout(1500)
+
+            # 批量下载图片
+            if pending_images:
+                self.sync_progress = f"正在下载 {len(pending_images)} 张图片..."
+                print(f"[xueqiu] Downloading {len(pending_images)} images...")
+                for i, (post_id, url, seq) in enumerate(pending_images):
+                    local = self._download_image(post_id, url, seq)
+                    self.db.save_image(post_id, url, local, seq)
+                    if (i + 1) % 10 == 0:
+                        self.sync_progress = f"图片 {i+1}/{len(pending_images)}"
+
+        except Exception as e:
+            # scrapling 会吞掉 page_action 里的异常，所以这里必须自己处理
+            print(f"[xueqiu] _sync_all error: {e}")
+            self.sync_status = "error"
+            self.sync_progress = f"同步出错: {e}"
+            raise  # re-raise 让 scrapling 的 log.error 也能记录
 
         self.db.set_sync_state("last_sync_time", str(int(time.time())))
         self.db.set_sync_state("total_synced", str(total_saved))
         self.sync_status = "done"
         self.sync_progress = f"同步完成，共 {total_saved} 条"
-        logger.info("Sync complete: %d posts, %d images", total_saved, len(pending_images))
+        print(f"[xueqiu] Sync complete: {total_saved} posts, {len(pending_images)} images")
 
     def _ensure_waf_ready(self, page):
         """导航到雪球首页，等待 WAF JS Challenge 完成。"""
         self.sync_progress = "正在通过 WAF 验证..."
-        page.goto(f"{_BASE_URL}/", wait_until="networkidle", timeout=60000)
-        page.wait_for_timeout(3000)
+        print("[xueqiu] _ensure_waf_ready: navigating to homepage...")
+        # 用 domcontentloaded 而非 networkidle — WAF challenge 页面持续有网络活动，
+        # networkidle 会等到超时。domcontentloaded 后再固定等待让 WAF JS 执行完毕。
+        page.goto(f"{_BASE_URL}/", wait_until="domcontentloaded", timeout=30000)
+        page.wait_for_timeout(5000)
+        print("[xueqiu] _ensure_waf_ready: done waiting")
 
     def _browser_fetch_api(self, page, path: str, params: dict) -> Optional[dict]:
         """在浏览器内用 fetch() 调 API，自动携带 WAF cookie。"""
@@ -176,15 +192,21 @@ class XueqiuScraper:
                         credentials: 'include',
                         headers: { 'Accept': 'application/json' }
                     });
-                    return await resp.text();
+                    const status = resp.status;
+                    const text = await resp.text();
+                    return JSON.stringify({status, text});
                 }
             """, url)
-            if not resp_text or resp_text.lstrip().startswith('<'):
-                logger.warning("WAF blocked fetch for %s", path)
+            wrapper = json.loads(resp_text)
+            status = wrapper.get("status", 0)
+            body = wrapper.get("text", "")
+            print(f"[xueqiu] fetch {path} → HTTP {status}, len={len(body)}, prefix={body[:100]!r}")
+            if not body or body.lstrip().startswith('<'):
+                print(f"[xueqiu] WAF blocked: {path}")
                 return None
-            return json.loads(resp_text)
+            return json.loads(body)
         except Exception as e:
-            logger.error("Browser fetch failed: %s %s — %s", path, params, e)
+            print(f"[xueqiu] fetch error: {path} — {e}")
             return None
 
     def _parse_timeline(self, data: dict) -> List[Dict]:

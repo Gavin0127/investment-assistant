@@ -99,21 +99,27 @@ class TestNeedsFullFetch:
 class TestBrowserFetchApi:
     def test_parse_json_response(self, scraper):
         """fetch 返回 JSON 时正确解析。"""
+        import json as _json
         mock_page = MagicMock()
-        mock_page.evaluate.return_value = '{"statuses": [{"id": 1}]}'
+        # _browser_fetch_api 现在期望 evaluate 返回 {status, text} 包装格式
+        inner = _json.dumps({"statuses": [{"id": 1}]})
+        mock_page.evaluate.return_value = _json.dumps({"status": 200, "text": inner})
         result = scraper._browser_fetch_api(mock_page, "/test", {"page": 1})
         assert result == {"statuses": [{"id": 1}]}
 
     def test_detect_waf_html(self, scraper):
         """fetch 返回 HTML 时识别为 WAF 拦截。"""
+        import json as _json
         mock_page = MagicMock()
-        mock_page.evaluate.return_value = '<textarea id="renderData">...</textarea><!doctype html>'
+        html = '<textarea id="renderData">...</textarea><!doctype html>'
+        mock_page.evaluate.return_value = _json.dumps({"status": 200, "text": html})
         result = scraper._browser_fetch_api(mock_page, "/test", {"page": 1})
         assert result is None
 
     def test_detect_empty_response(self, scraper):
         """fetch 返回空字符串时识别为失败。"""
+        import json as _json
         mock_page = MagicMock()
-        mock_page.evaluate.return_value = ''
+        mock_page.evaluate.return_value = _json.dumps({"status": 200, "text": ""})
         result = scraper._browser_fetch_api(mock_page, "/test", {"page": 1})
         assert result is None
