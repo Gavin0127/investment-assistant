@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Dict, List
 
+logger = logging.getLogger(__name__)
 
 _ANNUALIZATION_MULTIPLIER = {"H1x2": 2, "Qx4": 4, "annual": 1}
 
@@ -42,19 +44,28 @@ class ProfitModel:
     def _commodity_param_key(self, commodity: Dict) -> str:
         """从 commodities 条目推导 parameters 中的 key
 
-        匹配策略：中英文名互查 → symbol 前缀匹配 → 按位置索引兜底
+        匹配策略：精确匹配 → 模糊匹配(带警告) → symbol 前缀 → 按位置索引兜底
         """
         name = commodity["name"].lower()
         sym = commodity["symbol"].lower().replace("=", "").replace(".", "")
+
+        # 1) 精确匹配：key == name 或 key == symbol 前缀
         for key in self.params:
             kl = key.lower()
-            # 中英文名互查
+            if kl == name or kl == sym:
+                return key
+
+        # 2) 模糊匹配：子串包含（加日志警告）
+        for key in self.params:
+            kl = key.lower()
             if kl in name or name in kl:
+                logger.warning(
+                    "commodity %r 通过模糊匹配映射到参数 key %r（非精确匹配）",
+                    commodity["name"], key,
+                )
                 return key
-            # symbol 前缀匹配（如 HG=F → hgf, key=copper 不匹配，但 key=hgf 匹配）
-            if kl == sym:
-                return key
-        # 按位置索引兜底
+
+        # 3) 按位置索引兜底
         param_keys = list(self.params.keys())
         for i, c in enumerate(self.commodities):
             if c["symbol"] == commodity["symbol"] and i < len(param_keys):
@@ -91,11 +102,14 @@ class ProfitModel:
         price_index: Dict[str, Dict[str, float]] = {}
         running_sums: Dict[str, float] = {}
         running_counts: Dict[str, int] = {}
+        last_known: Dict[str, float] = {}  # forward fill 用
         for c in self.commodities:
             sym = c["symbol"]
             price_index[sym] = {r["date"]: r["close"] for r in prices.get(sym, [])}
             running_sums[sym] = 0.0
             running_counts[sym] = 0
+            sub = self.params.get(self._commodity_param_key(c), {})
+            last_known[sym] = sub.get("base_price", 0)  # 初始值为 base_price
 
         result = []
         for row in primary_rows:
@@ -105,9 +119,10 @@ class ProfitModel:
             for c in self.commodities:
                 sym = c["symbol"]
                 p = price_index[sym].get(d)
-                if p is None:
-                    sub = self.params.get(self._commodity_param_key(c), {})
-                    p = sub.get("base_price", 0)
+                if p is not None:
+                    last_known[sym] = p  # 更新 forward fill 值
+                else:
+                    p = last_known[sym]  # forward fill：用最近已知价格
                 day_prices[sym] = p
                 running_sums[sym] += p
                 running_counts[sym] += 1
@@ -129,8 +144,20 @@ class ProfitModel:
             return []
 
         latest = daily[-1]
-        last_30 = daily[-30:] if len(daily) >= 30 else daily
-        avg_profit_1m = sum(d["annualized_profit"] for d in last_30) / len(last_30)
+
+        # 按日期过滤最近1个自然月（而非固定30条）
+        latest_date = latest["date"]
+        one_month_ago = latest_date[:8] + "01"  # 当月1号作为近似
+        if int(latest_date[5:7]) > 1:
+            month = int(latest_date[5:7]) - 1
+            one_month_ago = f"{latest_date[:5]}{month:02d}-{latest_date[8:]}"
+        else:
+            one_month_ago = f"{int(latest_date[:4]) - 1}-12-{latest_date[8:]}"
+        last_month = [d for d in daily if d["date"] >= one_month_ago]
+        if not last_month:
+            last_month = daily[-30:] if len(daily) >= 30 else daily
+
+        avg_profit_1m = sum(d["annualized_profit"] for d in last_month) / len(last_month)
         ytd_profit = daily[-1]["ytd_avg_annualized_profit"]
 
         def avg_commodity_prices(rows):
@@ -152,8 +179,8 @@ class ProfitModel:
             {
                 "scenario": "最近1个月均价",
                 "annualized_profit": round(avg_profit_1m, 2),
-                "commodity_prices": avg_commodity_prices(last_30),
-                "date_range": f"{last_30[0]['date']} 至 {last_30[-1]['date']}",
+                "commodity_prices": avg_commodity_prices(last_month),
+                "date_range": f"{last_month[0]['date']} 至 {last_month[-1]['date']}",
             },
             {
                 "scenario": "年初至今均价年化",

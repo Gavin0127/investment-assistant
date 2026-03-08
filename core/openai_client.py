@@ -33,7 +33,7 @@ PROVIDER_DEFAULTS: Dict[str, Dict[str, str]] = {
     },
     "openai": {
         "base_url": "",  # 空字符串表示使用 OpenAI 默认
-        "model": "gpt-5.2",
+        "model": "gpt-5.4",
         "env_key": "OPENAI_API_KEY",
     },
 }

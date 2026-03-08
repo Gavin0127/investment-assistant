@@ -77,7 +77,7 @@ interview_manager = None
 env_collector = None
 research_engine = None
 preference_learner = None
-profit_tracker = None
+profit_tracker = ProfitTracker(None, storage)  # 不依赖 LLM，仅 derive 时需要 client
 
 def get_client():
     global client, interview_manager, env_collector, research_engine, preference_learner, profit_tracker
@@ -92,7 +92,7 @@ def get_client():
             env_collector = EnvironmentCollector(client, storage)
             research_engine = ResearchEngine(client, storage)
             preference_learner = PreferenceLearner(client, storage)
-            profit_tracker = ProfitTracker(client, storage)
+            profit_tracker.client = client  # 注入 LLM client 用于 derive
     return client
 
 # ==================== 认证 API ====================
@@ -750,22 +750,17 @@ def profit_dashboard():
 
 
 @app.route('/api/profit/models', methods=['GET'])
+@requires_auth
 def api_list_profit_models():
     """列出所有已配置利润模型的股票"""
-    get_client()
-    if not profit_tracker:
-        return jsonify({'error': 'API Key 未配置'}), 400
     models = profit_tracker.list_models()
     return jsonify(models)
 
 
 @app.route('/api/profit/<stock_id>', methods=['GET'])
+@requires_auth
 def api_get_profit_data(stock_id):
     """获取单只股票的日度利润数据"""
-    get_client()
-    if not profit_tracker:
-        return jsonify({'error': 'API Key 未配置'}), 400
-
     start = request.args.get('start', f'{datetime.now().year}-01-01')
     end = request.args.get('end', datetime.now().strftime('%Y-%m-%d'))
 
@@ -781,26 +776,24 @@ def api_get_profit_data(stock_id):
 
 
 @app.route('/api/profit/<stock_id>/model', methods=['GET'])
+@requires_auth
 def api_get_profit_model(stock_id):
     """获取利润模型配置"""
-    get_client()
-    if not profit_tracker:
-        return jsonify({'error': 'API Key 未配置'}), 400
     model = profit_tracker.get_model(stock_id)
     return jsonify(model or {})
 
 
 @app.route('/api/profit/<stock_id>/model', methods=['POST'])
+@requires_auth
 def api_save_profit_model(stock_id):
     """创建/更新利润模型"""
-    get_client()
-    if not profit_tracker:
-        return jsonify({'error': 'API Key 未配置'}), 400
-
     data = request.json
     mode = data.pop('mode', 'manual')
 
     if mode == 'llm':
+        get_client()
+        if not profit_tracker.client:
+            return jsonify({'error': 'API Key 未配置，无法使用 LLM 推导'}), 400
         result = profit_tracker.derive_model_with_llm(stock_id)
         if not result:
             return jsonify({'error': 'LLM 推导失败'}), 500
@@ -811,12 +804,9 @@ def api_save_profit_model(stock_id):
 
 
 @app.route('/api/profit/refresh', methods=['POST'])
+@requires_auth
 def api_refresh_prices():
     """手动触发价格数据刷新"""
-    get_client()
-    if not profit_tracker:
-        return jsonify({'error': 'API Key 未配置'}), 400
-
     models = profit_tracker.list_models()
     symbols = []
     seen = set()

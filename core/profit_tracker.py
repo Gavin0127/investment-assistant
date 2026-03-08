@@ -16,6 +16,17 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_DB = os.path.expanduser("~/.investment-assistant/data/commodity_prices.db")
 
+# stock_id 白名单：只允许小写字母、数字、下划线
+_STOCK_ID_RE = re.compile(r"^[a-z0-9_]+$")
+
+
+def _validate_stock_id(stock_id: str) -> str:
+    """校验并标准化 stock_id，防止路径穿越"""
+    sid = stock_id.lower().replace(" ", "_")
+    if not _STOCK_ID_RE.match(sid):
+        raise ValueError(f"非法 stock_id: {stock_id!r}（只允许小写字母、数字、下划线）")
+    return sid
+
 
 class ProfitTracker:
     """利润跟踪主入口（依赖注入）"""
@@ -28,7 +39,9 @@ class ProfitTracker:
     # ---------- 模型管理 ----------
 
     def _model_path(self, stock_id: str) -> str:
-        stock_dir = self.storage._get_stock_dir(stock_id)
+        sid = _validate_stock_id(stock_id)
+        stock_dir = self.storage.base_dir / "stocks" / sid
+        stock_dir.mkdir(parents=True, exist_ok=True)
         return str(stock_dir / "profit_model.json")
 
     def get_model(self, stock_id: str) -> Optional[Dict]:
@@ -155,10 +168,11 @@ class ProfitTracker:
 
     # ---------- 利润计算 ----------
 
-    def get_daily_profit(self, stock_id: str, start: str, end: str) -> List[Dict]:
+    def _load_model_and_prices(self, stock_id: str, start: str, end: str):
+        """加载模型配置和价格数据（共用逻辑）"""
         config = self.get_model(stock_id)
         if not config:
-            return []
+            return None, None, {}
         model = ProfitModel.from_config(config)
         prices = {}
         for c in config["commodities"]:
@@ -166,17 +180,16 @@ class ProfitTracker:
             if not cached:
                 cached = self.price_service.fetch_daily(c["symbol"], c["source"], start, end)
             prices[c["symbol"]] = cached
+        return config, model, prices
+
+    def get_daily_profit(self, stock_id: str, start: str, end: str) -> List[Dict]:
+        config, model, prices = self._load_model_and_prices(stock_id, start, end)
+        if not model:
+            return []
         return model.calculate(prices)
 
     def get_summary(self, stock_id: str, start: str, end: str) -> List[Dict]:
-        config = self.get_model(stock_id)
-        if not config:
+        config, model, prices = self._load_model_and_prices(stock_id, start, end)
+        if not model:
             return []
-        model = ProfitModel.from_config(config)
-        prices = {}
-        for c in config["commodities"]:
-            cached = self.price_service.get_cached(c["symbol"], c["source"], start, end)
-            if not cached:
-                cached = self.price_service.fetch_daily(c["symbol"], c["source"], start, end)
-            prices[c["symbol"]] = cached
         return model.scenarios(prices)

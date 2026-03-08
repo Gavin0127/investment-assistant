@@ -53,7 +53,8 @@ def main():
         logger.info("无已配置的利润模型，跳过")
         return
 
-    start = f"{datetime.now().year}-01-01"
+    # 回溯到前一年，确保跨年 base_period 也能拿到数据
+    start = f"{datetime.now().year - 1}-01-01"
     end = datetime.now().strftime("%Y-%m-%d")
     logger.info("更新 %d 个品种: %s ~ %s", len(symbols), start, end)
 

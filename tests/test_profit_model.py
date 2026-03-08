@@ -81,6 +81,49 @@ class TestMultiCommodity:
         # (450+280)*4 = 2920
         assert result[0]["annualized_profit"] == 2920.0
 
+    def test_position_based_fallback(self):
+        """当中英文名无法匹配时，应按位置索引兜底"""
+        config = {
+            "stock_name": "测试",
+            "commodities": [
+                {"name": "品种A", "symbol": "A=F", "source": "yfinance", "unit": "USD"},
+                {"name": "品种B", "symbol": "B=F", "source": "yfinance", "unit": "USD"},
+            ],
+            "annualization": "Qx4",
+            "base_period": "2026Q1",
+            "parameters": {
+                "alpha": {"base_profit": 100, "base_price": 50, "sensitivity": 2},
+                "beta": {"base_profit": 200, "base_price": 80, "sensitivity": 3},
+            },
+        }
+        model = ProfitModel.from_config(config)
+        prices = {
+            "A=F": [{"date": "2026-01-15", "close": 60}],
+            "B=F": [{"date": "2026-01-15", "close": 90}],
+        }
+        result = model.calculate(prices)
+        # alpha: 100 + (60-50)*2 = 120, beta: 200 + (90-80)*3 = 230, total=350, ann=1400
+        assert result[0]["annualized_profit"] == 1400.0
+
+    def test_forward_fill_missing_secondary(self):
+        """次要商品缺失日期时应用 forward fill 而非 base_price"""
+        prices = {
+            "HG=F": [
+                {"date": "2026-01-15", "close": 95000},
+                {"date": "2026-01-16", "close": 96000},
+            ],
+            "GC=F": [
+                {"date": "2026-01-15", "close": 1100},
+                # 2026-01-16 缺失，应 forward fill 为 1100
+            ],
+        }
+        result = self.model.calculate(prices)
+        assert len(result) == 2
+        # day2: copper=96000, gold=1100 (forward fill)
+        # copper: 450 + (96000-95000)*3.2 = 3650, gold: 280 + (1100-1050)*0.8 = 320
+        # total=3970, ann=15880
+        assert result[1]["commodity_prices"]["GC=F"] == 1100  # forward fill, not base_price
+
 
 class TestScenarios:
     """三场景汇总"""

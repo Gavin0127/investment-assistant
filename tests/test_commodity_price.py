@@ -74,6 +74,24 @@ class TestFetchDaily:
         assert len(rows) == 2
         mock_yf.download.assert_called_once()
 
+    @patch("core.commodity_price.yf")
+    def test_fetch_daily_yfinance_multiindex(self, mock_yf, price_service):
+        """yfinance 返回 MultiIndex DataFrame 时应正确处理"""
+        import pandas as pd
+        arrays = [["Open", "High", "Low", "Close"], ["BZ=F", "BZ=F", "BZ=F", "BZ=F"]]
+        tuples = list(zip(*arrays))
+        index = pd.MultiIndex.from_tuples(tuples)
+        mock_df = pd.DataFrame(
+            [[80.0, 82.0, 79.0, 81.5]],
+            columns=index,
+            index=pd.to_datetime(["2026-01-15"]),
+        )
+        mock_yf.download.return_value = mock_df
+
+        rows = price_service.fetch_daily("BZ=F", "yfinance", "2026-01-15", "2026-01-15")
+        assert len(rows) == 1
+        assert rows[0]["close"] == 81.5
+
     @patch("core.commodity_price.ak")
     def test_fetch_daily_akshare(self, mock_ak, price_service):
         """akshare 数据源应正确拉取碳酸锂数据"""
@@ -90,6 +108,32 @@ class TestFetchDaily:
         rows = price_service.fetch_daily("LC0", "akshare", "2026-01-15", "2026-01-16")
         assert len(rows) == 2
         assert rows[0]["currency"] == "CNY"
+
+
+class TestRefreshAll:
+    @patch("core.commodity_price.yf")
+    def test_single_failure_does_not_block_others(self, mock_yf, price_service):
+        """refresh_all 中单个 symbol 失败不应影响其他 symbol"""
+        import pandas as pd
+
+        def side_effect(symbol, **kwargs):
+            if symbol == "FAIL":
+                raise Exception("network error")
+            return pd.DataFrame({
+                "Open": [80.0], "High": [82.0], "Low": [79.0], "Close": [81.5],
+            }, index=pd.to_datetime(["2026-01-15"]))
+
+        mock_yf.download.side_effect = side_effect
+
+        symbols = [
+            {"symbol": "FAIL", "source": "yfinance"},
+            {"symbol": "OK=F", "source": "yfinance"},
+        ]
+        price_service.refresh_all(symbols, "2026-01-15", "2026-01-15")
+
+        # OK=F 应该成功写入
+        rows = price_service.get_cached("OK=F", "yfinance", "2026-01-01", "2026-12-31")
+        assert len(rows) == 1
 
 
 class TestFetchLatest:

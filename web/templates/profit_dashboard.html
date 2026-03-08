@@ -71,7 +71,7 @@
   </div>
 </div>
 
-<script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/echarts@5.5.1/dist/echarts.min.js" crossorigin="anonymous"></script>
 <script>
 function profitDashboard() {
   return {
@@ -99,7 +99,10 @@ function profitDashboard() {
     renderChart(stockId, data) {
       const el = document.getElementById('chart-' + stockId);
       if (!el || !data.daily || data.daily.length === 0) return;
-      const chart = echarts.init(el);
+      // 复用已有实例或创建新实例，避免 resize listener 泄漏
+      let chart = echarts.getInstanceByDom(el);
+      if (chart) chart.dispose();
+      chart = echarts.init(el);
       const dates = data.daily.map(d => d.date.slice(5));
       chart.setOption({
         tooltip: { trigger: 'axis' },

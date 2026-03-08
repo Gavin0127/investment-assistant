@@ -73,6 +73,52 @@ class TestDeriveModelWithLLM:
         assert saved is not None
 
 
+class TestStockIdValidation:
+    """stock_id 输入校验（C3 路径穿越防护）"""
+
+    def test_reject_path_traversal(self, tracker):
+        """包含 .. 的 stock_id 应被拒绝"""
+        with pytest.raises(ValueError, match="非法 stock_id"):
+            tracker.get_model("../../etc")
+
+    def test_reject_slash(self, tracker):
+        """包含 / 的 stock_id 应被拒绝"""
+        with pytest.raises(ValueError, match="非法 stock_id"):
+            tracker.create_model_manual("foo/bar", {"stock_name": "X"})
+
+    def test_accept_valid_id(self, tracker):
+        """合法 stock_id 应正常工作"""
+        config = {
+            "stock_name": "Test",
+            "commodities": [{"name": "X", "symbol": "X=F", "source": "yfinance", "unit": "USD"}],
+            "annualization": "Qx4", "base_period": "2026Q1",
+            "parameters": {"base_profit": 100, "base_commodity_price": 50, "sensitivity": 1},
+        }
+        tracker.create_model_manual("valid_stock_123", config)
+        assert tracker.get_model("valid_stock_123") is not None
+
+
+class TestDeriveModelEdgeCases:
+    """LLM 推导异常路径"""
+
+    def test_derive_no_playbook(self, tracker):
+        """无 playbook 时推导应返回 None"""
+        result = tracker.derive_model_with_llm("nonexistent")
+        assert result is None
+
+    def test_derive_unparseable_llm_response(self, tracker, tmp_storage, mock_openai_client):
+        """LLM 返回无法解析的内容时应返回 None"""
+        tmp_storage.save_stock_playbook("test", {
+            "stock_name": "Test",
+            "core_thesis": {"summary": "test"},
+        })
+        mock_openai_client.client.chat.completions.create.return_value.choices[0].message.content = (
+            "这不是一个有效的 JSON 响应，我无法生成配置。"
+        )
+        result = tracker.derive_model_with_llm("test")
+        assert result is None
+
+
 class TestListModels:
     def test_list_configured_stocks(self, tracker):
         """应列出所有配置了利润模型的股票"""

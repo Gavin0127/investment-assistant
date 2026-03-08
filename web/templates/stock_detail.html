@@ -1715,7 +1715,7 @@ function stockDetail() {
     }
 }
 </script>
-<script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/echarts@5.5.1/dist/echarts.min.js" crossorigin="anonymous"></script>
 <script>
 function profitSection() {
   const stockId = '{{ stock_id }}';
@@ -1727,7 +1727,7 @@ function profitSection() {
     summary: [],
     daily: [],
     form: {
-      annualization: 'Qx4', base_period: '', commodity_symbol: '',
+      annualization: 'Qx4', base_period: '', commodity_name: '', commodity_symbol: '',
       commodity_source: 'yfinance', base_profit: 0, base_commodity_price: 0, sensitivity: 0,
     },
 
@@ -1749,7 +1749,10 @@ function profitSection() {
     renderChart() {
       const el = document.getElementById('stock-profit-chart');
       if (!el || !this.daily.length) return;
-      const chart = echarts.init(el);
+      // 复用已有实例或创建新实例，避免 resize listener 泄漏
+      let chart = echarts.getInstanceByDom(el);
+      if (chart) chart.dispose();
+      chart = echarts.init(el);
       chart.setOption({
         tooltip: { trigger: 'axis' },
         legend: { data: ['按当日价格年化利润', '年内均价年化利润'], top: 0, textStyle: { fontSize: 11 } },
@@ -1791,7 +1794,7 @@ function profitSection() {
       const config = {
         stock_name: '{{ playbook.stock_name if playbook else stock_id }}',
         commodities: [{
-          name: this.form.commodity_symbol,
+          name: this.form.commodity_name || this.form.commodity_symbol,
           symbol: this.form.commodity_symbol,
           source: this.form.commodity_source,
           unit: '',
