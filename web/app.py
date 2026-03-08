@@ -984,7 +984,12 @@ def api_xueqiu_get_post(post_id):
     post = db.get_post(post_id)
     if not post:
         return jsonify({"error": "Post not found"}), 404
-    post["images"] = db.get_images(post_id)
+    images = db.get_images(post_id)
+    post["images"] = [
+        os.path.basename(img["local_path"])
+        for img in images
+        if img.get("local_path")
+    ]
     return jsonify(post)
 
 
