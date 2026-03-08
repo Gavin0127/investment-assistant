@@ -48,6 +48,8 @@ class LLMClient:
         model: Optional[str] = None,
         provider: str = "gemini",
         base_url: Optional[str] = None,
+        model_fast: Optional[str] = None,
+        model_reasoning: Optional[str] = None,
     ):
         self.provider = provider
         defaults = PROVIDER_DEFAULTS.get(provider, PROVIDER_DEFAULTS["gemini"])
@@ -59,6 +61,8 @@ class LLMClient:
             )
 
         self.model = model or defaults["model"]
+        self._model_fast = model_fast
+        self._model_reasoning = model_reasoning
 
         # base_url 优先级：参数 > 环境变量 LLM_BASE_URL > provider 默认值
         resolved_base_url = base_url or os.getenv("LLM_BASE_URL") or defaults["base_url"]
@@ -124,12 +128,12 @@ class LLMClient:
         )
 
     @property
-    def model_pro(self) -> str:
-        return self.model
+    def model_fast(self) -> str:
+        return self._model_fast or self.model
 
     @property
-    def model_flash(self) -> str:
-        return self.model
+    def model_reasoning(self) -> str:
+        return self._model_reasoning or self.model
 
     def _fetch_google_news_rss(self, query: str, time_range_days: int, limit: int = 8) -> Tuple[List[Dict[str, str]], Optional[str]]:
         """Fetch Google News RSS items.

@@ -90,6 +90,32 @@ class TestLLMClientInit:
         from core.openai_client import OpenAIClient, LLMClient
         assert OpenAIClient is LLMClient
 
+    def test_model_fast_defaults_to_model(self):
+        with patch("core.openai_client.OpenAI"):
+            from core.openai_client import LLMClient
+            client = LLMClient(api_key="test-key", provider="openai")
+            assert client.model_fast == client.model
+
+    def test_model_reasoning_defaults_to_model(self):
+        with patch("core.openai_client.OpenAI"):
+            from core.openai_client import LLMClient
+            client = LLMClient(api_key="test-key", provider="openai")
+            assert client.model_reasoning == client.model
+
+    def test_model_fast_custom(self):
+        with patch("core.openai_client.OpenAI"):
+            from core.openai_client import LLMClient
+            client = LLMClient(api_key="test-key", provider="openai", model_fast="gpt-4o-mini")
+            assert client.model_fast == "gpt-4o-mini"
+            assert client.model == "gpt-5.4"
+
+    def test_model_reasoning_custom(self):
+        with patch("core.openai_client.OpenAI"):
+            from core.openai_client import LLMClient
+            client = LLMClient(api_key="test-key", provider="openai", model_reasoning="o1-pro")
+            assert client.model_reasoning == "o1-pro"
+            assert client.model == "gpt-5.4"
+
 
 # ---------------------------------------------------------------------------
 # chat / chat_with_system
