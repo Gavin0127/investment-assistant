@@ -7,7 +7,7 @@ import re
 import time
 from pathlib import Path
 from typing import Dict, List, Optional
-from urllib.parse import urlparse
+from urllib.parse import urlencode, urlparse
 
 import requests
 
@@ -226,6 +226,33 @@ class XueqiuScraper:
             return resp.json()
         except Exception as e:
             logger.error("API request failed: %s %s — %s", path, params, e)
+            return None
+
+    def _ensure_waf_ready(self, page):
+        """导航到雪球首页，等待 WAF JS Challenge 完成。"""
+        self.sync_progress = "正在通过 WAF 验证..."
+        page.goto(f"{_BASE_URL}/", wait_until="networkidle", timeout=60000)
+        page.wait_for_timeout(3000)
+
+    def _browser_fetch_api(self, page, path: str, params: dict) -> Optional[dict]:
+        """在浏览器内用 fetch() 调 API，自动携带 WAF cookie。"""
+        url = f"{_BASE_URL}{path}?{urlencode(params)}"
+        try:
+            resp_text = page.evaluate("""
+                async (url) => {
+                    const resp = await fetch(url, {
+                        credentials: 'include',
+                        headers: { 'Accept': 'application/json' }
+                    });
+                    return await resp.text();
+                }
+            """, url)
+            if not resp_text or resp_text.lstrip().startswith('<'):
+                logger.warning("WAF blocked fetch for %s", path)
+                return None
+            return json.loads(resp_text)
+        except Exception as e:
+            logger.error("Browser fetch failed: %s %s — %s", path, params, e)
             return None
 
     def _parse_timeline(self, data: dict) -> List[Dict]:

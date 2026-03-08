@@ -94,3 +94,26 @@ class TestNeedsFullFetch:
     def test_column_with_text_no_fetch(self, scraper):
         post = {"type": "3", "is_column": True, "text": "已有全文"}
         assert scraper._needs_full_fetch(post) is False
+
+
+class TestBrowserFetchApi:
+    def test_parse_json_response(self, scraper):
+        """fetch 返回 JSON 时正确解析。"""
+        mock_page = MagicMock()
+        mock_page.evaluate.return_value = '{"statuses": [{"id": 1}]}'
+        result = scraper._browser_fetch_api(mock_page, "/test", {"page": 1})
+        assert result == {"statuses": [{"id": 1}]}
+
+    def test_detect_waf_html(self, scraper):
+        """fetch 返回 HTML 时识别为 WAF 拦截。"""
+        mock_page = MagicMock()
+        mock_page.evaluate.return_value = '<textarea id="renderData">...</textarea><!doctype html>'
+        result = scraper._browser_fetch_api(mock_page, "/test", {"page": 1})
+        assert result is None
+
+    def test_detect_empty_response(self, scraper):
+        """fetch 返回空字符串时识别为失败。"""
+        mock_page = MagicMock()
+        mock_page.evaluate.return_value = ''
+        result = scraper._browser_fetch_api(mock_page, "/test", {"page": 1})
+        assert result is None
