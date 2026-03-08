@@ -196,11 +196,13 @@ class XueqiuDB:
             conditions = []
             params: list = []
 
-            # C3: FTS search — 包裹为双引号字面量防止注入
+            # C3: 搜索 — FTS5 不支持中文分词，改用 LIKE 模糊匹配
             if query:
-                safe_query = '"' + query.replace('"', '""') + '"'
-                conditions.append("id IN (SELECT rowid FROM posts_fts WHERE posts_fts MATCH ?)")
-                params.append(safe_query)
+                like_pattern = f"%{query}%"
+                conditions.append(
+                    "(title LIKE ? OR text LIKE ? OR description LIKE ?)"
+                )
+                params.extend([like_pattern, like_pattern, like_pattern])
 
             # I5: post_type 为 None 时不筛选
             if post_type == "original":
