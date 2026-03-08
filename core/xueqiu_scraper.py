@@ -145,11 +145,11 @@ class XueqiuScraper:
                     _log(f"No posts on page {pg}, stopping")
                     break
 
+                new_on_page = 0
                 _log(f"Page {pg}: {len(posts)} posts")
                 for post in posts:
-                    if incremental and self.db.get_post(post["id"]):
-                        stop = True
-                        continue
+                    if self.db.get_post(post["id"]):
+                        continue  # 跳过已有帖子，继续处理本页剩余
 
                     if self._needs_full_fetch(post):
                         full = self._browser_fetch_api(
@@ -158,6 +158,8 @@ class XueqiuScraper:
                         if full:
                             post["text"] = full.get("text", post.get("text", ""))
                             post["title"] = full.get("title", post.get("title"))
+                        # 长文拉取也需要间隔
+                        page.wait_for_timeout(3000)
 
                     img_urls = self._extract_image_urls(post.get("text"))
                     self.db.save_post(post)
@@ -165,11 +167,14 @@ class XueqiuScraper:
                         pending_images.append((post["id"], url, seq))
 
                     total_saved += 1
+                    new_on_page += 1
                     self.sync_count = total_saved
                     self.sync_progress = f"已保存 {total_saved} 条帖子"
 
+                _log(f"Page {pg}: {new_on_page} new, {len(posts) - new_on_page} skipped")
                 pg += 1
-                page.wait_for_timeout(1500)
+                # 5 秒间隔，降低被风控的风险
+                page.wait_for_timeout(5000)
 
             # 批量下载图片
             if pending_images:
