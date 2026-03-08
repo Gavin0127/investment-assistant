@@ -17,6 +17,7 @@ from core.interview import InterviewManager
 from core.environment import EnvironmentCollector
 from core.research import ResearchEngine
 from core.preference_learner import PreferenceLearner
+from core.profit_tracker import ProfitTracker
 
 app = Flask(__name__)
 app.secret_key = os.urandom(24)  # 用于 session
@@ -76,9 +77,10 @@ interview_manager = None
 env_collector = None
 research_engine = None
 preference_learner = None
+profit_tracker = None
 
 def get_client():
-    global client, interview_manager, env_collector, research_engine, preference_learner
+    global client, interview_manager, env_collector, research_engine, preference_learner, profit_tracker
     if client is None:
         api_key = storage.get_api_key()
         if api_key:
@@ -90,6 +92,7 @@ def get_client():
             env_collector = EnvironmentCollector(client, storage)
             research_engine = ResearchEngine(client, storage)
             preference_learner = PreferenceLearner(client, storage)
+            profit_tracker = ProfitTracker(client, storage)
     return client
 
 # ==================== 认证 API ====================
@@ -736,6 +739,98 @@ def api_get_interactions():
     limit = request.args.get('limit', 20, type=int)
     interactions = storage.get_recent_interactions(limit)
     return jsonify(interactions)
+
+# ==================== 利润跟踪 API ====================
+
+@app.route('/profit-dashboard')
+@requires_auth
+def profit_dashboard():
+    """利润跟踪总览"""
+    return render_template('profit_dashboard.html')
+
+
+@app.route('/api/profit/models', methods=['GET'])
+def api_list_profit_models():
+    """列出所有已配置利润模型的股票"""
+    get_client()
+    if not profit_tracker:
+        return jsonify({'error': 'API Key 未配置'}), 400
+    models = profit_tracker.list_models()
+    return jsonify(models)
+
+
+@app.route('/api/profit/<stock_id>', methods=['GET'])
+def api_get_profit_data(stock_id):
+    """获取单只股票的日度利润数据"""
+    get_client()
+    if not profit_tracker:
+        return jsonify({'error': 'API Key 未配置'}), 400
+
+    start = request.args.get('start', f'{datetime.now().year}-01-01')
+    end = request.args.get('end', datetime.now().strftime('%Y-%m-%d'))
+
+    daily = profit_tracker.get_daily_profit(stock_id, start, end)
+    summary = profit_tracker.get_summary(stock_id, start, end)
+    model = profit_tracker.get_model(stock_id)
+
+    return jsonify({
+        'daily': daily,
+        'summary': summary,
+        'model': model,
+    })
+
+
+@app.route('/api/profit/<stock_id>/model', methods=['GET'])
+def api_get_profit_model(stock_id):
+    """获取利润模型配置"""
+    get_client()
+    if not profit_tracker:
+        return jsonify({'error': 'API Key 未配置'}), 400
+    model = profit_tracker.get_model(stock_id)
+    return jsonify(model or {})
+
+
+@app.route('/api/profit/<stock_id>/model', methods=['POST'])
+def api_save_profit_model(stock_id):
+    """创建/更新利润模型"""
+    get_client()
+    if not profit_tracker:
+        return jsonify({'error': 'API Key 未配置'}), 400
+
+    data = request.json
+    mode = data.pop('mode', 'manual')
+
+    if mode == 'llm':
+        result = profit_tracker.derive_model_with_llm(stock_id)
+        if not result:
+            return jsonify({'error': 'LLM 推导失败'}), 500
+        return jsonify({'success': True, 'model': result})
+    else:
+        profit_tracker.create_model_manual(stock_id, data)
+        return jsonify({'success': True})
+
+
+@app.route('/api/profit/refresh', methods=['POST'])
+def api_refresh_prices():
+    """手动触发价格数据刷新"""
+    get_client()
+    if not profit_tracker:
+        return jsonify({'error': 'API Key 未配置'}), 400
+
+    models = profit_tracker.list_models()
+    symbols = []
+    seen = set()
+    for m in models:
+        for c in m.get('commodities', []):
+            key = (c['symbol'], c['source'])
+            if key not in seen:
+                symbols.append({'symbol': c['symbol'], 'source': c['source']})
+                seen.add(key)
+
+    start = f'{datetime.now().year}-01-01'
+    end = datetime.now().strftime('%Y-%m-%d')
+    profit_tracker.price_service.refresh_all(symbols, start, end)
+    return jsonify({'success': True, 'refreshed': len(symbols)})
 
 # ==================== 批量扫描 API ====================
 

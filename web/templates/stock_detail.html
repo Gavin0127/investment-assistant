@@ -255,6 +255,118 @@
         </div>
     </div>
 
+    <!-- ==================== 利润跟踪区块 ==================== -->
+    <div class="bg-white rounded-xl shadow-sm border border-gray-100 mt-6"
+         x-data="profitSection()" x-init="init()">
+      <div class="p-4 border-b border-gray-100 flex justify-between items-center">
+        <h2 class="text-lg font-semibold text-gray-900">利润跟踪</h2>
+        <div class="flex gap-2">
+          <button x-show="hasModel" @click="refreshData()"
+                  class="text-sm text-blue-600 hover:text-blue-700">刷新</button>
+          <button @click="showConfig = !showConfig"
+                  class="text-sm text-gray-600 hover:text-gray-900"
+                  x-text="hasModel ? '编辑模型' : '配置模型'"></button>
+        </div>
+      </div>
+
+      <!-- 有模型：图表 + 汇总表 -->
+      <div x-show="hasModel && !showConfig" class="p-4">
+        <div id="stock-profit-chart" style="height: 300px;"></div>
+        <table class="w-full text-sm mt-4">
+          <thead>
+            <tr class="text-gray-500 text-xs">
+              <th class="text-left py-1">场景</th>
+              <th class="text-right py-1">利润</th>
+              <th class="text-right py-1">价格窗口</th>
+              <th class="text-right py-1">原材料价格</th>
+            </tr>
+          </thead>
+          <tbody>
+            <template x-for="s in summary" :key="s.scenario">
+              <tr class="border-t border-gray-50">
+                <td class="py-2 text-gray-700" x-text="s.scenario"></td>
+                <td class="py-2 text-right font-medium" x-text="s.annualized_profit.toFixed(2) + ' 亿元'"></td>
+                <td class="py-2 text-right text-gray-500 text-xs" x-text="s.date_range"></td>
+                <td class="py-2 text-right text-gray-500 text-xs">
+                  <template x-for="(price, sym) in s.commodity_prices" :key="sym">
+                    <span class="block" x-text="sym + ': ' + price.toFixed(2)"></span>
+                  </template>
+                </td>
+              </tr>
+            </template>
+          </tbody>
+        </table>
+      </div>
+
+      <!-- 无模型 / 配置面板 -->
+      <div x-show="!hasModel || showConfig" class="p-4">
+        <div class="flex gap-3 mb-4">
+          <button @click="configMode = 'manual'"
+                  :class="configMode === 'manual' ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-700'"
+                  class="px-3 py-1.5 rounded-lg text-sm">手动配置</button>
+          <button @click="configMode = 'llm'"
+                  :class="configMode === 'llm' ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-700'"
+                  class="px-3 py-1.5 rounded-lg text-sm">LLM 推导</button>
+        </div>
+
+        <!-- LLM 推导 -->
+        <div x-show="configMode === 'llm'" class="space-y-3">
+          <p class="text-sm text-gray-500">基于 Playbook 和研究历史，让 AI 自动推导利润敏感性模型。</p>
+          <button @click="deriveLLM()" :disabled="deriving"
+                  class="bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-lg text-sm disabled:opacity-50">
+            <span x-show="!deriving">一键推导</span>
+            <span x-show="deriving">推导中...</span>
+          </button>
+        </div>
+
+        <!-- 手动配置表单 -->
+        <div x-show="configMode === 'manual'" class="space-y-3">
+          <div>
+            <label class="block text-sm text-gray-600 mb-1">年化方式</label>
+            <select x-model="form.annualization" class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm">
+              <option value="H1x2">H1×2（半年报×2）</option>
+              <option value="Qx4">Q×4（单季×4）</option>
+              <option value="annual">年报（不乘）</option>
+            </select>
+          </div>
+          <div>
+            <label class="block text-sm text-gray-600 mb-1">基准期</label>
+            <input x-model="form.base_period" class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm"
+                   placeholder="如 2026H1, 2026Q1">
+          </div>
+          <div>
+            <label class="block text-sm text-gray-600 mb-1">关联原材料（symbol）</label>
+            <input x-model="form.commodity_symbol" class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm"
+                   placeholder="如 BZ=F (Brent), HG=F (铜), GC=F (黄金), LC0 (碳酸锂)">
+          </div>
+          <div>
+            <label class="block text-sm text-gray-600 mb-1">数据源</label>
+            <select x-model="form.commodity_source" class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm">
+              <option value="yfinance">yfinance</option>
+              <option value="akshare">akshare（碳酸锂等国内期货）</option>
+            </select>
+          </div>
+          <div class="grid grid-cols-3 gap-3">
+            <div>
+              <label class="block text-sm text-gray-600 mb-1">基准期利润（亿元）</label>
+              <input x-model.number="form.base_profit" type="number" class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm">
+            </div>
+            <div>
+              <label class="block text-sm text-gray-600 mb-1">基准期原材料均价</label>
+              <input x-model.number="form.base_commodity_price" type="number" class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm">
+            </div>
+            <div>
+              <label class="block text-sm text-gray-600 mb-1">敏感度（亿元/单位）</label>
+              <input x-model.number="form.sensitivity" type="number" step="0.1" class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm">
+            </div>
+          </div>
+          <button @click="saveManual()" class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm">
+            保存模型
+          </button>
+        </div>
+      </div>
+    </div>
+
     <!-- ==================== 深度研究弹窗 ==================== -->
     <div x-show="researchModal" class="fixed inset-0 z-50 overflow-y-auto" x-cloak>
         <div class="flex items-center justify-center min-h-screen px-4 py-8">
@@ -1601,6 +1713,107 @@ function stockDetail() {
             this.openResearchModal();
         }
     }
+}
+</script>
+<script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
+<script>
+function profitSection() {
+  const stockId = '{{ stock_id }}';
+  return {
+    hasModel: false,
+    showConfig: false,
+    configMode: 'manual',
+    deriving: false,
+    summary: [],
+    daily: [],
+    form: {
+      annualization: 'Qx4', base_period: '', commodity_symbol: '',
+      commodity_source: 'yfinance', base_profit: 0, base_commodity_price: 0, sensitivity: 0,
+    },
+
+    async init() {
+      const resp = await fetch(`/api/profit/${stockId}/model`);
+      const model = await resp.json();
+      this.hasModel = !!(model && model.stock_name);
+      if (this.hasModel) await this.loadData();
+    },
+
+    async loadData() {
+      const resp = await fetch(`/api/profit/${stockId}`);
+      const data = await resp.json();
+      this.daily = data.daily || [];
+      this.summary = data.summary || [];
+      this.$nextTick(() => this.renderChart());
+    },
+
+    renderChart() {
+      const el = document.getElementById('stock-profit-chart');
+      if (!el || !this.daily.length) return;
+      const chart = echarts.init(el);
+      chart.setOption({
+        tooltip: { trigger: 'axis' },
+        legend: { data: ['按当日价格年化利润', '年内均价年化利润'], top: 0, textStyle: { fontSize: 11 } },
+        grid: { left: 60, right: 20, top: 35, bottom: 25 },
+        xAxis: { type: 'category', data: this.daily.map(d => d.date.slice(5)) },
+        yAxis: { type: 'value' },
+        series: [
+          { name: '按当日价格年化利润', type: 'line', smooth: true, symbol: 'none',
+            lineStyle: { color: '#C07A3E', width: 2 }, itemStyle: { color: '#C07A3E' },
+            data: this.daily.map(d => d.annualized_profit) },
+          { name: '年内均价年化利润', type: 'line', smooth: true, symbol: 'none',
+            lineStyle: { color: '#3B7A8A', width: 2 }, itemStyle: { color: '#3B7A8A' },
+            data: this.daily.map(d => d.ytd_avg_annualized_profit) },
+        ],
+      });
+      window.addEventListener('resize', () => chart.resize());
+    },
+
+    async refreshData() { await this.loadData(); },
+
+    async deriveLLM() {
+      this.deriving = true;
+      const resp = await fetch(`/api/profit/${stockId}/model`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mode: 'llm' }),
+      });
+      const result = await resp.json();
+      this.deriving = false;
+      if (result.success) {
+        this.hasModel = true;
+        this.showConfig = false;
+        await this.loadData();
+      } else {
+        alert('推导失败: ' + (result.error || '未知错误'));
+      }
+    },
+
+    async saveManual() {
+      const config = {
+        stock_name: '{{ playbook.stock_name if playbook else stock_id }}',
+        commodities: [{
+          name: this.form.commodity_symbol,
+          symbol: this.form.commodity_symbol,
+          source: this.form.commodity_source,
+          unit: '',
+        }],
+        annualization: this.form.annualization,
+        base_period: this.form.base_period,
+        parameters: {
+          base_profit: this.form.base_profit,
+          base_commodity_price: this.form.base_commodity_price,
+          sensitivity: this.form.sensitivity,
+        },
+        mode: 'manual',
+      };
+      await fetch(`/api/profit/${stockId}/model`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(config),
+      });
+      this.hasModel = true;
+      this.showConfig = false;
+      await this.loadData();
+    },
+  };
 }
 </script>
 {% endblock %}
