@@ -341,11 +341,17 @@ function xueqiuApp() {
       });
       const postId = this.selectedPost?.id;
       if (!postId) return cleaned;
-      // I6: 用 data-fallback 替代 onerror 属性
+      const imageMap = this.selectedPost?.image_map || {};
+      // 替换 img src：用 image_map 查找本地文件名，找不到则 fallback 到原始 URL
       return cleaned.replace(/<img([^>]*)\ssrc=["']([^"']+)["']/g, (match, attrs, src) => {
-        const filename = src.split('/').pop().split('?')[0];
-        const localSrc = '/api/xueqiu/images/' + postId + '/' + filename;
-        return '<img' + attrs + ' src="' + localSrc + '" data-fallback="' + encodeURI(src) + '"';
+        const origFilename = src.split('/').pop().split('?')[0];
+        const localFilename = imageMap[origFilename];
+        if (localFilename) {
+          const localSrc = '/api/xueqiu/images/' + postId + '/' + localFilename;
+          return '<img' + attrs + ' src="' + localSrc + '" data-fallback="' + encodeURI(src) + '"';
+        }
+        // 没有本地映射，保留原始 URL
+        return match;
       });
     },
 

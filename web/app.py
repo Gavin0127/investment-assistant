@@ -990,6 +990,14 @@ def api_xueqiu_get_post(post_id):
         for img in images
         if img.get("local_path")
     ]
+    # 原始 URL 文件名 → 本地文件名 的映射，供前端替换 HTML 中的 img src
+    image_map = {}
+    for img in images:
+        if img.get("local_path") and img.get("original_url"):
+            orig_filename = img["original_url"].split("/")[-1].split("?")[0]
+            local_filename = os.path.basename(img["local_path"])
+            image_map[orig_filename] = local_filename
+    post["image_map"] = image_map
     return jsonify(post)
 
 
