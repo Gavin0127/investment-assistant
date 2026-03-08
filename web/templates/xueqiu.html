@@ -260,11 +260,30 @@ function xueqiuApp() {
       this.loadPosts(true);
     },
 
-    async startSync() {
+    async startSync(force = false) {
       this.syncing = true;
       this.syncProgress = '同步中...';
       try {
-        await fetch('/api/xueqiu/sync', { method: 'POST' });
+        const resp = await fetch('/api/xueqiu/sync', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ force }),
+        });
+        if (resp.status === 409) {
+          if (confirm('上次同步未正常结束，是否强制重新同步？')) {
+            return this.startSync(true);
+          }
+          this.syncing = false;
+          this.syncProgress = '';
+          return;
+        }
+        if (!resp.ok) {
+          const data = await resp.json().catch(() => ({}));
+          alert(data.error || `同步请求失败 (${resp.status})`);
+          this.syncing = false;
+          this.syncProgress = '';
+          return;
+        }
         this.pollSyncStatus();
       } catch (e) {
         console.error('Sync failed:', e);
@@ -284,11 +303,16 @@ function xueqiuApp() {
           } else {
             clearInterval(poll);
             this.syncing = false;
-            this.syncProgress = '';
-            if (data.last_sync_time) {
-              this.lastSyncTime = data.last_sync_time;
+            if (data.status === 'error') {
+              this.syncProgress = '';
+              alert('同步失败: ' + (data.progress || '未知错误'));
+            } else {
+              this.syncProgress = '';
+              if (data.last_sync_time) {
+                this.lastSyncTime = data.last_sync_time;
+              }
+              this.resetAndLoad();
             }
-            this.resetAndLoad();
           }
         } catch (e) {
           clearInterval(poll);

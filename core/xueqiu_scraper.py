@@ -45,86 +45,162 @@ class XueqiuScraper:
         try:
             from scrapling.fetchers import StealthyFetcher
 
-            def extract_cookies(page):
-                import asyncio
+            def login_then_sync(page):
                 self.sync_progress = "请在浏览器中登录雪球..."
                 for _ in range(300):  # 5 min timeout
-                    cookies = asyncio.get_event_loop().run_until_complete(
-                        page.context.cookies()
-                    )
+                    cookies = page.context.cookies()
                     cookie_dict = {c["name"]: c["value"] for c in cookies}
                     if "u" in cookie_dict:
-                        self._cookies = cookie_dict
+                        logger.info("Login detected, cookies: %s", list(cookie_dict.keys()))
+                        page.wait_for_timeout(2000)
+                        self._cookies = {c["name"]: c["value"] for c in page.context.cookies()}
+                        self._sync_via_interception(page, user_id)
                         return page
-                    asyncio.get_event_loop().run_until_complete(
-                        page.wait_for_timeout(1000)
-                    )
+                    page.wait_for_timeout(1000)
                 raise TimeoutError("登录超时（5分钟）")
 
             StealthyFetcher.fetch(
                 f"{_BASE_URL}/",
                 headless=headless,
-                page_action=extract_cookies,
+                timeout=60000,
+                page_action=login_then_sync,
             )
-            self._sync_all(user_id)
         except Exception as e:
             self.sync_status = "error"
             self.sync_progress = f"错误: {e}"
             logger.error("Sync failed: %s", e)
             raise
 
-    def _sync_all(self, user_id: int):
-        """Fetch all timeline pages and save posts."""
+    def _sync_via_interception(self, page, user_id: int):
+        """导航到用户主页，拦截页面自身的 timeline API 响应来获取数据。"""
         self.sync_status = "syncing"
         last_id = self.db.get_latest_post_id()
         incremental = last_id is not None
-
-        page = 1
         total_saved = 0
         stop = False
+        captured_responses: list = []
 
-        while not stop:
-            self.sync_progress = f"正在拉取第 {page} 页..."
-            logger.info("Fetching timeline page %d", page)
+        def on_response(response):
+            """拦截页面发出的 timeline API 响应。"""
+            if _TIMELINE_API in response.url:
+                try:
+                    data = response.json()
+                    captured_responses.append(data)
+                    logger.info("Captured timeline response, statuses=%d", len(data.get("statuses", [])))
+                except Exception as e:
+                    logger.warning("Failed to parse captured response: %s", e)
 
-            data = self._api_get(_TIMELINE_API, {"user_id": user_id, "page": page})
-            if not data:
-                break
+        page.on("response", on_response)
 
+        # 导航到用户主页，触发第一次 timeline API 请求
+        self.sync_progress = "正在加载用户主页..."
+        logger.info("Navigating to user page: %s/u/%d", _BASE_URL, user_id)
+        page.goto(f"{_BASE_URL}/u/{user_id}", wait_until="networkidle", timeout=60000)
+        page.wait_for_timeout(3000)
+
+        # 处理首次加载捕获的数据
+        pg = 1
+        for data in captured_responses:
+            self.sync_progress = f"正在处理第 {pg} 页..."
             posts = self._parse_timeline(data)
-            if not posts:
-                break
-
             for post in posts:
-                # I3: 遇到已存在的帖子标记停止，但 continue 处理完当前页
                 if incremental and self.db.get_post(post["id"]):
                     stop = True
                     continue
-
                 if self._needs_full_fetch(post):
-                    full = self._fetch_full_article(post["id"])
+                    # 长文需要完整内容，通过点击进入详情页获取
+                    full = self._fetch_article_in_browser(page, post["id"])
                     if full:
                         post["text"] = full.get("text", post.get("text", ""))
                         post["title"] = full.get("title", post.get("title"))
-
                 img_urls = self._extract_image_urls(post.get("text"))
                 self.db.save_post(post)
                 for seq, url in enumerate(img_urls):
                     local = self._download_image(post["id"], url, seq)
                     self.db.save_image(post["id"], url, local, seq)
-
                 total_saved += 1
                 self.sync_count = total_saved
                 self.sync_progress = f"已保存 {total_saved} 条"
+            pg += 1
 
-            page += 1
-            time.sleep(1.5)
+        # 模拟滚动加载更多页
+        max_scroll_pages = 50
+        while not stop and pg <= max_scroll_pages:
+            captured_responses.clear()
+            self.sync_progress = f"正在滚动加载第 {pg} 页..."
+            logger.info("Scrolling to load page %d", pg)
 
+            # 滚动到底部触发加载
+            page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+            page.wait_for_timeout(3000)
+
+            if not captured_responses:
+                # 没有新的 API 响应，可能已经到底了
+                logger.info("No more timeline responses captured, stopping")
+                break
+
+            for data in captured_responses:
+                posts = self._parse_timeline(data)
+                if not posts:
+                    stop = True
+                    break
+                for post in posts:
+                    if incremental and self.db.get_post(post["id"]):
+                        stop = True
+                        continue
+                    if self._needs_full_fetch(post):
+                        full = self._fetch_article_in_browser(page, post["id"])
+                        if full:
+                            post["text"] = full.get("text", post.get("text", ""))
+                            post["title"] = full.get("title", post.get("title"))
+                    img_urls = self._extract_image_urls(post.get("text"))
+                    self.db.save_post(post)
+                    for seq, url in enumerate(img_urls):
+                        local = self._download_image(post["id"], url, seq)
+                        self.db.save_image(post["id"], url, local, seq)
+                    total_saved += 1
+                    self.sync_count = total_saved
+                    self.sync_progress = f"已保存 {total_saved} 条"
+            pg += 1
+
+        page.remove_listener("response", on_response)
         self.db.set_sync_state("last_sync_time", str(int(time.time())))
         self.db.set_sync_state("total_synced", str(total_saved))
         self.sync_status = "done"
         self.sync_progress = f"同步完成，共 {total_saved} 条"
         logger.info("Sync complete: %d posts saved", total_saved)
+
+    def _fetch_article_in_browser(self, page, post_id: int) -> Optional[dict]:
+        """在浏览器内通过拦截获取长文详情。"""
+        captured = []
+
+        def on_show_response(response):
+            if _SHOW_API in response.url and str(post_id) in response.url:
+                try:
+                    captured.append(response.json())
+                except Exception:
+                    pass
+
+        page.on("response", on_show_response)
+        try:
+            page.goto(f"{_BASE_URL}/{post_id}", wait_until="networkidle", timeout=30000)
+            page.wait_for_timeout(2000)
+        except Exception as e:
+            logger.warning("Failed to load article %d: %s", post_id, e)
+        finally:
+            page.remove_listener("response", on_show_response)
+
+        if captured:
+            return captured[0]
+        # fallback: 从页面 DOM 提取
+        try:
+            text = page.evaluate("() => document.querySelector('.article__bd')?.innerHTML || ''")
+            title = page.evaluate("() => document.querySelector('.article__title')?.textContent || ''")
+            if text:
+                return {"text": text, "title": title}
+        except Exception:
+            pass
+        return None
 
     def _api_get(self, path: str, params: dict) -> Optional[dict]:
         try:
@@ -144,7 +220,7 @@ class XueqiuScraper:
             post = {
                 "id": s["id"],
                 "user_id": s.get("user_id", 0),
-                "type": s.get("type"),
+                "type": str(s.get("type") or "2"),
                 "is_column": bool(s.get("is_column")),
                 "title": s.get("title") or None,
                 "text": s.get("text") or "",

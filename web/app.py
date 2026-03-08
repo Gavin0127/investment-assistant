@@ -1003,10 +1003,17 @@ def api_xueqiu_image(post_id, filename):
 def api_xueqiu_sync():
     global _xueqiu_sync_thread
     scraper = _get_xueqiu_scraper()
+    data = request.json or {}
+    force = data.get("force", False)
     # I4: 用 lock 防止并发同步竞态条件
     if not _xueqiu_sync_lock.acquire(blocking=False):
-        return jsonify({"error": "同步正在进行中"}), 409
-    data = request.json or {}
+        # 强制模式：线程已死但 lock 未释放时，强制释放
+        if force and (_xueqiu_sync_thread is None or not _xueqiu_sync_thread.is_alive()):
+            _xueqiu_sync_lock.release()
+            _xueqiu_sync_lock.acquire()
+            scraper.sync_status = "idle"
+        else:
+            return jsonify({"error": "同步正在进行中"}), 409
     # M2: 默认 user_id 为逸修1，后续可改为从配置读取
     user_id = data.get("user_id", 1936609590)
 
