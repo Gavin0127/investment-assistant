@@ -919,6 +919,108 @@ def api_batch_research_stock(stock_id):
 
     return jsonify(result)
 
+# ==================== 雪球跟踪 API ====================
+
+import threading
+
+_xueqiu_scraper = None
+_xueqiu_sync_thread = None
+
+
+def _get_xueqiu_db():
+    from core.xueqiu_db import XueqiuDB
+    db_path = os.path.join(str(storage.base_dir), "data", "xueqiu_posts.db")
+    return XueqiuDB(db_path)
+
+
+def _get_xueqiu_scraper():
+    global _xueqiu_scraper
+    if _xueqiu_scraper is None:
+        from core.xueqiu_scraper import XueqiuScraper
+        db_path = os.path.join(str(storage.base_dir), "data", "xueqiu_posts.db")
+        image_dir = os.path.join(str(storage.base_dir), "data", "xueqiu_images")
+        _xueqiu_scraper = XueqiuScraper(db_path, image_dir)
+    return _xueqiu_scraper
+
+
+@app.route('/xueqiu')
+@requires_auth
+def xueqiu_page():
+    return render_template('xueqiu.html')
+
+
+@app.route('/api/xueqiu/posts', methods=['GET'])
+@requires_auth
+def api_xueqiu_list_posts():
+    db = _get_xueqiu_db()
+    page = request.args.get('page', 1, type=int)
+    per_page = request.args.get('per_page', 30, type=int)
+    post_type = request.args.get('type', 'all')
+    query = request.args.get('q', '')
+    start_date = request.args.get('start_date', '')
+    end_date = request.args.get('end_date', '')
+    posts, total = db.list_posts(
+        page=page, per_page=per_page, post_type=post_type,
+        query=query, start_date=start_date, end_date=end_date,
+    )
+    return jsonify({"posts": posts, "total": total, "page": page, "per_page": per_page})
+
+
+@app.route('/api/xueqiu/posts/<int:post_id>', methods=['GET'])
+@requires_auth
+def api_xueqiu_get_post(post_id):
+    db = _get_xueqiu_db()
+    post = db.get_post(post_id)
+    if not post:
+        return jsonify({"error": "Post not found"}), 404
+    post["images"] = db.get_images(post_id)
+    return jsonify(post)
+
+
+@app.route('/api/xueqiu/images/<int:post_id>/<filename>', methods=['GET'])
+@requires_auth
+def api_xueqiu_image(post_id, filename):
+    from flask import send_from_directory
+    image_dir = os.path.join(str(storage.base_dir), "data", "xueqiu_images", str(post_id))
+    return send_from_directory(image_dir, filename)
+
+
+@app.route('/api/xueqiu/sync', methods=['POST'])
+@requires_auth
+def api_xueqiu_sync():
+    global _xueqiu_sync_thread
+    scraper = _get_xueqiu_scraper()
+    if scraper.sync_status in ("syncing", "logging_in"):
+        return jsonify({"error": "同步正在进行中"}), 409
+    data = request.json or {}
+    user_id = data.get("user_id", 1936609590)
+
+    def run_sync():
+        try:
+            scraper.login_and_sync(user_id, headless=False)
+        except Exception as e:
+            scraper.sync_status = "error"
+            scraper.sync_progress = str(e)
+
+    _xueqiu_sync_thread = threading.Thread(target=run_sync, daemon=True)
+    _xueqiu_sync_thread.start()
+    return jsonify({"success": True, "message": "同步已启动"})
+
+
+@app.route('/api/xueqiu/sync/status', methods=['GET'])
+@requires_auth
+def api_xueqiu_sync_status():
+    scraper = _get_xueqiu_scraper()
+    db = _get_xueqiu_db()
+    last_sync = db.get_sync_state("last_sync_time")
+    return jsonify({
+        "status": scraper.sync_status,
+        "progress": scraper.sync_progress,
+        "count": scraper.sync_count,
+        "last_sync_time": last_sync,
+    })
+
+
 if __name__ == '__main__':
     print("\n" + "="*50)
     print("投资研究助手 Web 版")
