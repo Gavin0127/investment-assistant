@@ -26,6 +26,10 @@ uv run python assistant.py                       # CLI 交互模式
 # 利润跟踪
 uv run python scripts/update_prices.py           # 手动更新大宗商品价格
 
+# 雪球同步
+uv run python scripts/sync_xueqiu.py --user-id 1936609590            # 全量同步
+uv run python scripts/sync_xueqiu.py --user-id 1936609590 -v         # 全量同步（详细日志）
+
 # Docker
 docker compose up -d                             # 容器启动 (端口 5100)
 docker compose logs -f                           # 查看日志
@@ -90,6 +94,8 @@ User Feedback → Preference Learning → 下一轮研究上下文
 - `stocks/{stock_id}/history.json`: 研究记录（支持 milestone 标记为永久上下文）
 - `stocks/{stock_id}/profit_model.json`: 利润敏感性模型配置
 - `data/commodity_prices.db`: 大宗商品价格（SQLite）
+- `data/xueqiu_posts.db`: 雪球帖子（SQLite + FTS5）
+- `data/xueqiu_images/`: 雪球帖子图片
 
 ## 关键约定
 
@@ -125,6 +131,8 @@ User Feedback → Preference Learning → 下一轮研究上下文
 
 ## 最近重大变更
 
+- 2026-03-08: 雪球内容爬取与展示
+  - 设计文档: `docs/plans/2026-03-08-xueqiu-scraper-design.md`
 - 2026-03-08: 利润跟踪模块（原材料价格 → 利润敏感性）
   - 设计文档: `docs/plans/2026-03-08-profit-tracker-design.md`
 - 2026-02-24: 双 LLM Provider 支持 + uv 迁移 + Docker 化
