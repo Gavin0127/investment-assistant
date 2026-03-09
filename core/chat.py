@@ -163,13 +163,24 @@ class ChatEngine:
             )
             if effort:
                 create_kwargs["reasoning_effort"] = effort
+                create_kwargs["extra_body"] = {
+                    "reasoning": {"effort": effort, "summary": "detailed"},
+                }
             stream = self.llm.client.chat.completions.create(**create_kwargs)
             for chunk in stream:
                 if not chunk.choices:
                     continue
                 delta = chunk.choices[0].delta
 
+                # 兼容多种 thinking 字段格式：
+                # 1) delta.reasoning_content (OpenAI 原生)
+                # 2) delta.model_extra['thinking']['content'] (代理/兼容层)
                 reasoning = getattr(delta, "reasoning_content", None)
+                if not reasoning:
+                    extra = getattr(delta, "model_extra", None) or {}
+                    thinking_obj = extra.get("thinking")
+                    if isinstance(thinking_obj, dict):
+                        reasoning = thinking_obj.get("content")
                 if reasoning:
                     thinking_buf.append(reasoning)
                     yield {"type": "thinking", "content": reasoning}
