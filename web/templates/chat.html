@@ -1,0 +1,344 @@
+{% extends "base.html" %}
+{% block title %}AI 助手{% endblock %}
+{% block content %}
+<style>
+    @keyframes blink {
+        0%, 100% { opacity: 1; }
+        50% { opacity: 0; }
+    }
+    .typing-cursor::after {
+        content: '▊';
+        animation: blink 0.8s step-end infinite;
+        color: #6b7280;
+        margin-left: 2px;
+    }
+    .thinking-collapse {
+        max-height: 0;
+        overflow: hidden;
+        transition: max-height 0.3s ease-out, opacity 0.3s ease-out;
+        opacity: 0;
+    }
+    .thinking-collapse.open {
+        max-height: 2000px;
+        opacity: 1;
+        transition: max-height 0.5s ease-in, opacity 0.3s ease-in;
+    }
+    .chat-textarea {
+        resize: none;
+        overflow-y: auto;
+        max-height: 6rem;
+    }
+    .session-item:hover .delete-btn { opacity: 1; }
+    .delete-btn { opacity: 0; transition: opacity 0.15s; }
+    /* markdown in assistant bubbles */
+    .msg-prose p { margin: 0.4em 0; }
+    .msg-prose p:first-child { margin-top: 0; }
+    .msg-prose p:last-child { margin-bottom: 0; }
+</style>
+
+<div x-data="chatApp()" x-init="init()" class="flex" style="height: calc(100vh - 180px);">
+    <!-- 左侧会话列表 -->
+    <div class="w-1/4 border-r border-gray-200 bg-white flex flex-col rounded-l-lg overflow-hidden">
+        <div class="p-3 border-b border-gray-200">
+            <button @click="newSession()"
+                    class="w-full px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 transition-colors">
+                + 新对话
+            </button>
+        </div>
+        <div class="flex-1 overflow-y-auto">
+            <template x-for="s in sessions" :key="s.id">
+                <div @click="selectSession(s.id)"
+                     :class="s.id === currentSessionId ? 'bg-blue-50 border-l-2 border-blue-600' : 'hover:bg-gray-50 border-l-2 border-transparent'"
+                     class="session-item flex items-center justify-between px-4 py-3 cursor-pointer transition-colors">
+                    <div class="min-w-0 flex-1">
+                        <div class="text-sm font-medium text-gray-800 truncate" x-text="s.title || '新对话'"></div>
+                        <div class="text-xs text-gray-400 mt-0.5" x-text="formatTime(s.updated_at)"></div>
+                    </div>
+                    <button @click.stop="deleteSession(s.id)"
+                            class="delete-btn ml-2 p-1 text-gray-400 hover:text-red-500 rounded transition-colors"
+                            title="删除会话">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+                        </svg>
+                    </button>
+                </div>
+            </template>
+            <div x-show="sessions.length === 0" class="p-4 text-center text-sm text-gray-400">
+                暂无会话
+            </div>
+        </div>
+    </div>
+
+    <!-- 右侧聊天区域 -->
+    <div class="w-3/4 flex flex-col bg-gray-50 rounded-r-lg overflow-hidden">
+        <!-- 消息列表 -->
+        <div x-ref="messageList" class="flex-1 overflow-y-auto px-6 py-4 space-y-4">
+            <!-- 空状态 -->
+            <div x-show="messages.length === 0 && !loading" class="flex items-center justify-center h-full">
+                <div class="text-center text-gray-400">
+                    <div class="text-4xl mb-3">💬</div>
+                    <div class="text-lg font-medium">开始新的对话</div>
+                    <div class="text-sm mt-1">输入你的问题，AI 助手将为你解答</div>
+                </div>
+            </div>
+
+            <!-- 加载中 -->
+            <div x-show="loading" class="flex items-center justify-center h-full">
+                <div class="text-gray-400 text-sm">加载消息中...</div>
+            </div>
+
+            <!-- 消息列表 -->
+            <template x-for="(msg, idx) in messages" :key="idx">
+                <div>
+                    <!-- 用户消息 -->
+                    <div x-show="msg.role === 'user'" class="flex justify-end">
+                        <div class="max-w-2xl px-4 py-2.5 rounded-2xl rounded-br-sm bg-blue-600 text-white text-sm leading-relaxed whitespace-pre-wrap"
+                             x-text="msg.content"></div>
+                    </div>
+
+                    <!-- 思考过程 -->
+                    <div x-show="msg.role === 'thinking'" class="flex justify-start">
+                        <div class="max-w-2xl w-full">
+                            <button @click="msg.collapsed = !msg.collapsed"
+                                    class="flex items-center space-x-1.5 text-xs text-gray-500 hover:text-gray-700 mb-1 transition-colors">
+                                <span x-text="msg.collapsed ? '▶' : '▼'" class="text-[10px]"></span>
+                                <span>💭 思考过程</span>
+                            </button>
+                            <div :class="msg.collapsed ? '' : 'open'"
+                                 class="thinking-collapse">
+                                <div class="px-4 py-2.5 rounded-2xl rounded-bl-sm bg-gray-100 text-gray-600 text-sm leading-relaxed prose msg-prose"
+                                     x-html="renderMarkdown(msg.content)"></div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- 助手消息 -->
+                    <div x-show="msg.role === 'assistant'" class="flex justify-start">
+                        <div class="max-w-2xl px-4 py-2.5 rounded-2xl rounded-bl-sm bg-white shadow-sm border border-gray-100 text-sm leading-relaxed prose msg-prose"
+                             :class="streaming && idx === messages.length - 1 ? 'typing-cursor' : ''"
+                             x-html="renderMarkdown(msg.content)"></div>
+                    </div>
+
+                    <!-- 错误消息 -->
+                    <div x-show="msg.role === 'error'" class="flex justify-start">
+                        <div class="max-w-2xl px-4 py-2.5 rounded-2xl bg-red-50 border border-red-200 text-red-700 text-sm leading-relaxed"
+                             x-text="msg.content"></div>
+                    </div>
+                </div>
+            </template>
+        </div>
+
+        <!-- 输入区域 -->
+        <div class="border-t border-gray-200 bg-white px-6 py-4">
+            <div class="flex items-end space-x-3">
+                <textarea x-model="inputText"
+                          @keydown="handleKeydown($event)"
+                          @input="$el.style.height = 'auto'; $el.style.height = Math.min($el.scrollHeight, 96) + 'px'"
+                          :disabled="streaming"
+                          placeholder="输入消息... (Enter 发送, Shift+Enter 换行)"
+                          rows="1"
+                          class="chat-textarea flex-1 px-4 py-2.5 border border-gray-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent disabled:bg-gray-50 disabled:text-gray-400"></textarea>
+                <button @click="sendMessage()"
+                        :disabled="!inputText.trim() || streaming"
+                        class="px-4 py-2.5 bg-blue-600 text-white rounded-xl text-sm font-medium hover:bg-blue-700 disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors flex-shrink-0">
+                    <span x-show="!streaming">发送</span>
+                    <span x-show="streaming" class="flex items-center space-x-1">
+                        <svg class="animate-spin h-4 w-4" fill="none" viewBox="0 0 24 24">
+                            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+                        </svg>
+                        <span>生成中</span>
+                    </span>
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function chatApp() {
+    return {
+        sessions: [],
+        currentSessionId: null,
+        messages: [],
+        inputText: '',
+        loading: false,
+        streaming: false,
+
+        async init() {
+            await this.loadSessions();
+        },
+
+        async loadSessions() {
+            try {
+                const resp = await fetch('/api/chat/sessions');
+                const data = await resp.json();
+                this.sessions = (data.sessions || data || []).sort(
+                    (a, b) => new Date(b.updated_at || 0) - new Date(a.updated_at || 0)
+                );
+            } catch (e) {
+                console.error('Failed to load sessions:', e);
+            }
+        },
+
+        async selectSession(id) {
+            if (id === this.currentSessionId) return;
+            this.currentSessionId = id;
+            this.messages = [];
+            this.loading = true;
+            try {
+                const resp = await fetch(`/api/chat/sessions/${id}/messages`);
+                const data = await resp.json();
+                this.messages = (data.messages || data || []).map(m => {
+                    if (m.role === 'thinking') m.collapsed = true;
+                    return m;
+                });
+                this.$nextTick(() => this.scrollToBottom());
+            } catch (e) {
+                console.error('Failed to load messages:', e);
+            }
+            this.loading = false;
+        },
+
+        async newSession() {
+            this.currentSessionId = null;
+            this.messages = [];
+            this.inputText = '';
+        },
+
+        async deleteSession(id) {
+            if (!confirm('确定删除此会话？')) return;
+            try {
+                await fetch(`/api/chat/sessions/${id}`, { method: 'DELETE' });
+                this.sessions = this.sessions.filter(s => s.id !== id);
+                if (this.currentSessionId === id) {
+                    this.currentSessionId = null;
+                    this.messages = [];
+                }
+            } catch (e) {
+                console.error('Failed to delete session:', e);
+            }
+        },
+
+        async sendMessage() {
+            if (!this.inputText.trim() || this.streaming) return;
+            const text = this.inputText.trim();
+            this.inputText = '';
+            // reset textarea height
+            this.$nextTick(() => {
+                const ta = this.$el.querySelector('textarea');
+                if (ta) ta.style.height = 'auto';
+            });
+            this.messages.push({ role: 'user', content: text });
+            this.streaming = true;
+            this.scrollToBottom();
+
+            // auto-create session if needed
+            if (!this.currentSessionId) {
+                try {
+                    const resp = await fetch('/api/chat/sessions', { method: 'POST' });
+                    const session = await resp.json();
+                    this.currentSessionId = session.id;
+                    this.sessions.unshift(session);
+                } catch (e) {
+                    this.messages.push({ role: 'error', content: '创建会话失败: ' + e.message });
+                    this.streaming = false;
+                    return;
+                }
+            }
+
+            try {
+                const resp = await fetch(`/api/chat/sessions/${this.currentSessionId}/messages`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ content: text })
+                });
+
+                if (!resp.ok) {
+                    const err = await resp.text();
+                    this.messages.push({ role: 'error', content: `请求失败 (${resp.status}): ${err}` });
+                    this.streaming = false;
+                    return;
+                }
+
+                const reader = resp.body.getReader();
+                const decoder = new TextDecoder();
+                let thinkingBuf = '';
+                let contentBuf = '';
+                let thinkingMsg = null;
+                let contentMsg = null;
+                let buffer = '';
+
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+                    buffer += decoder.decode(value, { stream: true });
+                    const lines = buffer.split('\n');
+                    buffer = lines.pop();
+                    for (const line of lines) {
+                        if (!line.startsWith('data: ')) continue;
+                        try {
+                            const event = JSON.parse(line.slice(6));
+                            if (event.type === 'thinking') {
+                                thinkingBuf += event.content;
+                                if (!thinkingMsg) {
+                                    thinkingMsg = { role: 'thinking', content: thinkingBuf, collapsed: true };
+                                    this.messages.push(thinkingMsg);
+                                } else {
+                                    thinkingMsg.content = thinkingBuf;
+                                }
+                            } else if (event.type === 'content') {
+                                contentBuf += event.content;
+                                if (!contentMsg) {
+                                    contentMsg = { role: 'assistant', content: contentBuf };
+                                    this.messages.push(contentMsg);
+                                } else {
+                                    contentMsg.content = contentBuf;
+                                }
+                            } else if (event.type === 'done') {
+                                if (event.session_title) {
+                                    const s = this.sessions.find(s => s.id === this.currentSessionId);
+                                    if (s) s.title = event.session_title;
+                                }
+                            } else if (event.type === 'error') {
+                                this.messages.push({ role: 'error', content: event.content });
+                            }
+                            this.scrollToBottom();
+                        } catch (e) { /* ignore parse errors */ }
+                    }
+                }
+            } catch (e) {
+                this.messages.push({ role: 'error', content: '连接中断: ' + e.message });
+            }
+            this.streaming = false;
+        },
+
+        scrollToBottom() {
+            this.$nextTick(() => {
+                const el = this.$refs.messageList;
+                if (el) el.scrollTop = el.scrollHeight;
+            });
+        },
+
+        renderMarkdown(text) {
+            return DOMPurify.sanitize(marked.parse(text || ''));
+        },
+
+        formatTime(ts) {
+            if (!ts) return '';
+            const d = new Date(ts);
+            return d.toLocaleDateString('zh-CN', { month: 'short', day: 'numeric' });
+        },
+
+        handleKeydown(e) {
+            if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                this.sendMessage();
+            }
+        }
+    };
+}
+</script>
+{% endblock %}
