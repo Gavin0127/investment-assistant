@@ -1095,6 +1095,97 @@ def api_xueqiu_remove_user(user_id):
     return jsonify({"success": True})
 
 
+# ==================== AI 聊天 API ====================
+
+_chat_engine = None
+_chat_db = None
+
+
+def _get_chat_db():
+    global _chat_db
+    if _chat_db is None:
+        from core.chat import ChatDB
+        db_path = os.path.join(str(storage.base_dir), "data", "chat.db")
+        _chat_db = ChatDB(db_path)
+    return _chat_db
+
+
+def _get_chat_engine():
+    global _chat_engine
+    if _chat_engine is None:
+        from core.chat import ChatEngine
+        _chat_engine = ChatEngine(
+            llm_client=get_client(),
+            xueqiu_db=_get_xueqiu_db(),
+            chat_db=_get_chat_db(),
+            storage=storage,
+        )
+    return _chat_engine
+
+
+@app.route('/chat')
+@requires_auth
+def chat_page():
+    return render_template('chat.html')
+
+
+@app.route('/api/chat/sessions', methods=['GET'])
+@requires_auth
+def api_chat_list_sessions():
+    db = _get_chat_db()
+    return jsonify({"sessions": db.list_sessions()})
+
+
+@app.route('/api/chat/sessions', methods=['POST'])
+@requires_auth
+def api_chat_create_session():
+    db = _get_chat_db()
+    sid = db.create_session()
+    sessions = db.list_sessions()
+    session_data = next((s for s in sessions if s["id"] == sid), None)
+    return jsonify(session_data)
+
+
+@app.route('/api/chat/sessions/<session_id>', methods=['DELETE'])
+@requires_auth
+def api_chat_delete_session(session_id):
+    db = _get_chat_db()
+    db.delete_session(session_id)
+    return jsonify({"success": True})
+
+
+@app.route('/api/chat/sessions/<session_id>/messages', methods=['GET'])
+@requires_auth
+def api_chat_get_messages(session_id):
+    db = _get_chat_db()
+    return jsonify({"messages": db.get_messages(session_id)})
+
+
+@app.route('/api/chat/sessions/<session_id>/messages', methods=['POST'])
+@requires_auth
+def api_chat_send(session_id):
+    data = request.json or {}
+    content = data.get("content", "").strip()
+    if not content:
+        return jsonify({"error": "消息不能为空"}), 400
+
+    engine = _get_chat_engine()
+
+    def generate():
+        for event in engine.stream_reply(session_id, content):
+            yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+
+    return Response(
+        generate(),
+        mimetype='text/event-stream',
+        headers={
+            'Cache-Control': 'no-cache',
+            'X-Accel-Buffering': 'no',
+            'Connection': 'keep-alive',
+        }
+    )
+
+
 if __name__ == '__main__':
     print("\n" + "="*50)
     print("投资研究助手 Web 版")
