@@ -970,9 +970,11 @@ def api_xueqiu_list_posts():
     query = request.args.get('q', '') or None
     start_date = request.args.get('start_date', '') or None
     end_date = request.args.get('end_date', '') or None
+    user_id = request.args.get('user_id', type=int) or None
     posts, total = db.list_posts(
         page=page, per_page=per_page, post_type=post_type,
         query=query, start_date=start_date, end_date=end_date,
+        user_id=user_id,
     )
     return jsonify({"posts": posts, "total": total, "page": page, "per_page": per_page})
 
@@ -1029,12 +1031,12 @@ def api_xueqiu_sync():
             scraper.sync_status = "idle"
         else:
             return jsonify({"error": "同步正在进行中"}), 409
-    # M2: 默认 user_id 为逸修1，后续可改为从配置读取
     user_id = data.get("user_id", 1936609590)
+    max_pages = min(data.get("max_pages", 5), 200)
 
     def run_sync():
         try:
-            scraper.login_and_sync(user_id, headless=False)
+            scraper.login_and_sync(user_id, headless=False, max_pages=max_pages)
         except Exception as e:
             scraper.sync_status = "error"
             scraper.sync_progress = str(e)
@@ -1058,6 +1060,39 @@ def api_xueqiu_sync_status():
         "count": scraper.sync_count,
         "last_sync_time": last_sync,
     })
+
+
+@app.route('/api/xueqiu/users', methods=['GET'])
+@requires_auth
+def api_xueqiu_list_users():
+    db = _get_xueqiu_db()
+    return jsonify({"users": db.list_users()})
+
+
+@app.route('/api/xueqiu/users', methods=['POST'])
+@requires_auth
+def api_xueqiu_add_user():
+    data = request.json or {}
+    user_id = data.get("user_id")
+    nickname = data.get("nickname", "").strip()
+    if not user_id or not isinstance(user_id, int) or user_id <= 0:
+        return jsonify({"error": "user_id 必须为正整数"}), 400
+    if not nickname:
+        return jsonify({"error": "昵称不能为空"}), 400
+    db = _get_xueqiu_db()
+    existing = db.get_user(user_id)
+    if existing:
+        return jsonify({"error": "用户已存在"}), 409
+    db.add_user(user_id, nickname)
+    return jsonify({"success": True, "user": db.get_user(user_id)})
+
+
+@app.route('/api/xueqiu/users/<int:user_id>', methods=['DELETE'])
+@requires_auth
+def api_xueqiu_remove_user(user_id):
+    db = _get_xueqiu_db()
+    db.remove_user(user_id)
+    return jsonify({"success": True})
 
 
 if __name__ == '__main__':
