@@ -22,7 +22,21 @@
 <div x-data="xueqiuApp()" x-init="init()">
   <!-- 顶部 -->
   <div class="flex justify-between items-center mb-5">
-    <h1 class="text-2xl font-bold text-gray-900">雪球跟踪 - 逸修1</h1>
+    <div class="flex items-center gap-3">
+      <h1 class="text-2xl font-bold text-gray-900">雪球跟踪</h1>
+      <!-- 用户选择器 -->
+      <div class="flex items-center gap-1.5">
+        <select x-model="selectedUserId" @change="resetAndLoad()"
+                class="px-3 py-1.5 border border-gray-200 rounded-lg text-sm focus:outline-none focus:border-blue-400">
+          <option :value="null">全部用户</option>
+          <template x-for="u in users" :key="u.user_id">
+            <option :value="u.user_id" x-text="u.nickname + ' (' + u.user_id + ')'"></option>
+          </template>
+        </select>
+        <button @click="showAddUser = true"
+                class="w-7 h-7 flex items-center justify-center rounded-md border border-gray-200 text-gray-500 hover:bg-gray-100 text-sm">+</button>
+      </div>
+    </div>
     <div class="flex items-center gap-3">
       <!-- 搜索框 -->
       <div class="relative">
@@ -33,12 +47,54 @@
                class="pl-9 pr-3 py-2 border border-gray-200 rounded-lg text-sm w-56 focus:outline-none focus:border-blue-400 focus:ring-1 focus:ring-blue-100">
       </div>
       <!-- 同步按钮 -->
-      <button @click="startSync()" :disabled="syncing"
-              class="bg-gray-800 hover:bg-gray-900 text-white px-4 py-2 rounded-lg text-sm disabled:opacity-50 transition-colors whitespace-nowrap">
-        <span x-show="!syncing">同步数据</span>
-        <span x-show="syncing" x-text="syncProgress || '同步中...'"></span>
-      </button>
+      <div class="relative">
+        <button @click="showSyncPanel = !showSyncPanel" :disabled="syncing"
+                class="bg-gray-800 hover:bg-gray-900 text-white px-4 py-2 rounded-lg text-sm disabled:opacity-50 transition-colors whitespace-nowrap">
+          <span x-show="!syncing">同步数据 ▾</span>
+          <span x-show="syncing" x-text="syncProgress || '同步中...'"></span>
+        </button>
+        <!-- 同步设置面板 -->
+        <div x-show="showSyncPanel && !syncing" @click.away="showSyncPanel = false"
+             class="absolute right-0 top-full mt-1 bg-white border border-gray-200 rounded-lg shadow-lg p-3 z-10 w-48">
+          <label class="block text-xs text-gray-500 mb-1">爬取页数</label>
+          <input type="number" x-model.number="maxPages" min="1" max="200"
+                 class="w-full px-2 py-1 border border-gray-200 rounded-md text-sm mb-2 focus:outline-none focus:border-blue-400">
+          <button @click="showSyncPanel = false; startSync()"
+                  class="w-full bg-blue-600 hover:bg-blue-700 text-white px-3 py-1.5 rounded-md text-sm">
+            开始同步
+          </button>
+        </div>
+      </div>
     </div>
+  </div>
+
+  <!-- 添加用户弹窗 -->
+  <div x-show="showAddUser" class="fixed inset-0 bg-black/30 flex items-center justify-center z-50" @click.self="showAddUser = false">
+    <div class="bg-white rounded-xl p-5 w-80 shadow-xl">
+      <h3 class="text-lg font-semibold mb-3">添加雪球用户</h3>
+      <div class="space-y-3">
+        <div>
+          <label class="block text-xs text-gray-500 mb-1">用户 ID</label>
+          <input type="number" x-model="newUserId" placeholder="如 1936609590"
+                 class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:border-blue-400">
+        </div>
+        <div>
+          <label class="block text-xs text-gray-500 mb-1">昵称</label>
+          <input type="text" x-model="newNickname" placeholder="如 逸修1"
+                 class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:border-blue-400">
+        </div>
+        <div class="flex gap-2">
+          <button @click="showAddUser = false" class="flex-1 px-3 py-2 border border-gray-200 rounded-lg text-sm text-gray-600 hover:bg-gray-50">取消</button>
+          <button @click="addUser()" class="flex-1 px-3 py-2 bg-blue-600 text-white rounded-lg text-sm hover:bg-blue-700">添加</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 同步进度条 -->
+  <div x-show="syncing" class="mb-3 bg-blue-50 border border-blue-200 rounded-lg px-4 py-2 flex items-center gap-3">
+    <div class="animate-spin w-4 h-4 border-2 border-blue-600 border-t-transparent rounded-full"></div>
+    <span class="text-sm text-blue-700" x-text="syncProgress || '同步中...'"></span>
   </div>
 
   <!-- 主面板 -->
@@ -180,8 +236,47 @@ function xueqiuApp() {
     syncProgress: '',
     lastSyncTime: '',
     debounceTimer: null,
+    users: [],
+    selectedUserId: null,
+    showAddUser: false,
+    newUserId: '',
+    newNickname: '',
+    maxPages: 5,
+    showSyncPanel: false,
+
+    async loadUsers() {
+      try {
+        const resp = await fetch('/api/xueqiu/users');
+        const data = await resp.json();
+        this.users = data.users || [];
+      } catch (e) { console.error('Failed to load users:', e); }
+    },
+
+    async addUser() {
+      const uid = parseInt(this.newUserId);
+      if (!uid || !this.newNickname.trim()) return;
+      try {
+        const resp = await fetch('/api/xueqiu/users', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({user_id: uid, nickname: this.newNickname.trim()})
+        });
+        if (!resp.ok) {
+          const data = await resp.json().catch(() => ({}));
+          alert(data.error || '添加失败');
+          return;
+        }
+        this.showAddUser = false;
+        this.newUserId = '';
+        this.newNickname = '';
+        await this.loadUsers();
+        this.selectedUserId = uid;
+        this.resetAndLoad();
+      } catch (e) { console.error('Failed to add user:', e); }
+    },
 
     async init() {
+      await this.loadUsers();
       await this.loadPosts(false);
       this.fetchSyncStatus();
       // 从 URL hash 恢复选中状态
@@ -206,6 +301,7 @@ function xueqiuApp() {
         per_page: 30,
         type: this.filter,
       });
+      if (this.selectedUserId) params.set('user_id', parseInt(this.selectedUserId));
       if (this.query) params.set('q', this.query);
       if (this.startDate) params.set('start_date', this.startDate);
       if (this.endDate) params.set('end_date', this.endDate);
@@ -267,7 +363,11 @@ function xueqiuApp() {
         const resp = await fetch('/api/xueqiu/sync', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ force }),
+          body: JSON.stringify({
+            force,
+            user_id: this.selectedUserId ? parseInt(this.selectedUserId) : undefined,
+            max_pages: this.maxPages
+          }),
         });
         if (resp.status === 409) {
           if (confirm('上次同步未正常结束，是否强制重新同步？')) {
