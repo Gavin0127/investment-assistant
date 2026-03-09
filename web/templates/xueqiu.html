@@ -374,6 +374,10 @@ function xueqiuApp() {
 
     async init() {
       await this.loadUsers();
+      // 默认选中第一个用户
+      if (this.users.length > 0) {
+        this.selectedUserId = this.users[0].user_id;
+      }
       await this.loadPosts(false);
       this.fetchSyncStatus();
       const hash = window.location.hash;

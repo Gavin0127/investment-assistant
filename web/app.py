@@ -1132,7 +1132,9 @@ def _get_chat_engine():
 @app.route('/chat')
 @requires_auth
 def chat_page():
-    return render_template('chat.html')
+    c = get_client()
+    default_model_label = c.model if c else '未配置'
+    return render_template('chat.html', default_model_label=default_model_label)
 
 
 @app.route('/api/chat/sessions', methods=['GET'])
