@@ -316,14 +316,6 @@ class XueqiuDB:
             ).fetchone()
             return dict(row) if row else None
 
-    def get_latest_post_id(self) -> Optional[int]:
-        """Get the id of the most recent post by created_at."""
-        with self._get_conn() as conn:
-            row = conn.execute(
-                "SELECT id FROM posts ORDER BY created_at DESC LIMIT 1"
-            ).fetchone()
-            return row["id"] if row else None
-
     @staticmethod
     def _date_to_ms(date_str: str, end_of_day: bool = False) -> int:
         """Convert YYYY-MM-DD to millisecond timestamp (CST/UTC+8)."""
