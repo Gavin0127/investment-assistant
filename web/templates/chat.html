@@ -267,8 +267,8 @@ function chatApp() {
                 const decoder = new TextDecoder();
                 let thinkingBuf = '';
                 let contentBuf = '';
-                let thinkingMsg = null;
-                let contentMsg = null;
+                let thinkingIdx = -1;
+                let contentIdx = -1;
                 let buffer = '';
 
                 while (true) {
@@ -283,19 +283,19 @@ function chatApp() {
                             const event = JSON.parse(line.slice(6));
                             if (event.type === 'thinking') {
                                 thinkingBuf += event.content;
-                                if (!thinkingMsg) {
-                                    thinkingMsg = { role: 'thinking', content: thinkingBuf, collapsed: true };
-                                    this.messages.push(thinkingMsg);
+                                if (thinkingIdx < 0) {
+                                    thinkingIdx = this.messages.length;
+                                    this.messages.push({ role: 'thinking', content: thinkingBuf, collapsed: true });
                                 } else {
-                                    thinkingMsg.content = thinkingBuf;
+                                    this.messages[thinkingIdx] = Object.assign({}, this.messages[thinkingIdx], { content: thinkingBuf });
                                 }
                             } else if (event.type === 'content') {
                                 contentBuf += event.content;
-                                if (!contentMsg) {
-                                    contentMsg = { role: 'assistant', content: contentBuf };
-                                    this.messages.push(contentMsg);
+                                if (contentIdx < 0) {
+                                    contentIdx = this.messages.length;
+                                    this.messages.push({ role: 'assistant', content: contentBuf });
                                 } else {
-                                    contentMsg.content = contentBuf;
+                                    this.messages[contentIdx] = Object.assign({}, this.messages[contentIdx], { content: contentBuf });
                                 }
                             } else if (event.type === 'done') {
                                 if (event.session_title) {
