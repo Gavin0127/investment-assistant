@@ -107,87 +107,177 @@ class XueqiuScraper:
             raise
 
     def _sync_all(self, page, user_id: int, max_pages: int = 5):
-        """用 fetch() 精确分页同步所有帖子。"""
+        """双阶段增量同步。
+
+        阶段 1（追新）：从 page 1 开始，upsert 所有帖子，直到连上已同步区或用完配额。
+        阶段 2（深挖）：从历史断点继续往后翻，用剩余配额。
+        """
         self.sync_status = "syncing"
-        total_saved = 0
+        new_count = 0
+        updated_count = 0
         pending_images: list = []
+        pages_used = 0
+        all_timestamps: list[int] = []
 
         try:
             self._ensure_waf_ready(page)
+            cursor = self.db.get_sync_cursor(user_id)
 
-            last_id = self.db.get_latest_post_id()
-            incremental = last_id is not None
-            _log(f"incremental={incremental}, last_id={last_id}")
-            stop = False
-            waf_retries = 0
+            # ── 阶段 1：追新 ──
+            connected = False
+            if cursor is not None:
+                pg = 1
+                while pages_used < max_pages:
+                    self.sync_progress = f"正在检查新帖... (第 {pg} 页)"
+                    _log(f"Phase 1: fetching page {pg}")
 
-            pg = 1
-            while not stop and pg <= max_pages:
-                self.sync_progress = f"正在拉取第 {pg}/{max_pages} 页..."
-                _log(f"Fetching timeline page {pg}")
+                    data = self._fetch_with_waf_retry(page, user_id, pg)
+                    if data is None:
+                        break
+                    pages_used += 1
 
-                data = self._browser_fetch_api(
-                    page, _TIMELINE_API, {"user_id": user_id, "page": pg}
+                    posts = self._parse_timeline(data)
+                    if not posts:
+                        _log(f"Phase 1: page {pg} empty, stopping")
+                        break
+
+                    page_oldest_at = min(p["created_at"] for p in posts)
+                    page_new, page_updated = self._process_posts(
+                        page, posts, pending_images, all_timestamps
+                    )
+                    new_count += page_new
+                    updated_count += page_updated
+                    self.sync_count = new_count
+                    self.sync_progress = f"发现 {new_count} 条新帖，更新 {updated_count} 条"
+
+                    if not cursor.get("has_gap", False):
+                        if page_oldest_at <= cursor["newest_synced_at"]:
+                            connected = True
+                            _log(f"Phase 1: connected at page {pg} (no gap)")
+                            break
+                    else:
+                        if page_oldest_at <= cursor["oldest_synced_at"]:
+                            connected = True
+                            _log(f"Phase 1: connected at page {pg} (gap filled)")
+                            break
+
+                    pg += 1
+                    page.wait_for_timeout(5000)
+
+                if all_timestamps:
+                    cursor["newest_synced_at"] = max(
+                        cursor["newest_synced_at"], max(all_timestamps)
+                    )
+
+                if not connected:
+                    cursor["has_gap"] = True
+                    if all_timestamps:
+                        cursor["oldest_synced_at"] = min(
+                            cursor["oldest_synced_at"], min(all_timestamps)
+                        )
+                    cursor["total_posts"] = self.db.count_posts(user_id)
+                    self.db.set_sync_cursor(user_id, cursor)
+                    self._finish_sync(
+                        user_id, new_count, updated_count, pending_images, page
+                    )
+                    return
+                else:
+                    cursor["has_gap"] = False
+
+            # ── 阶段 2：深挖历史 ──
+            remaining = max_pages - pages_used
+            if remaining <= 0:
+                if cursor:
+                    cursor["total_posts"] = self.db.count_posts(user_id)
+                    self.db.set_sync_cursor(user_id, cursor)
+                self._finish_sync(
+                    user_id, new_count, updated_count, pending_images, page
                 )
+                return
+
+            if cursor is None:
+                start_page = 1
+            else:
+                page_offset = new_count // 20
+                start_page = cursor.get("next_history_page", 1) + page_offset
+
+            pg = start_page
+            self.sync_progress = "正在定位历史断点..."
+            _log(f"Phase 2: starting at page {pg} (remaining={remaining})")
+
+            locate_attempts = 0
+            while locate_attempts < 3 and remaining > 0:
+                data = self._fetch_with_waf_retry(page, user_id, pg)
                 if data is None:
-                    if waf_retries < 3:
-                        _log(f"WAF retry {waf_retries + 1}/3")
-                        self._ensure_waf_ready(page)
-                        waf_retries += 1
-                        continue
-                    _log("WAF retries exhausted, stopping")
                     break
-                waf_retries = 0
 
                 posts = self._parse_timeline(data)
                 if not posts:
-                    _log(f"No posts on page {pg}, stopping")
+                    _log(f"Phase 2: page {pg} empty, history done")
+                    if cursor is None:
+                        cursor = self._make_cursor(all_timestamps)
+                    cursor["history_done"] = True
                     break
 
-                new_on_page = 0
-                _log(f"Page {pg}: {len(posts)} posts")
-                for post in posts:
-                    if self.db.get_post(post["id"]):
-                        continue  # 跳过已有帖子，继续处理本页剩余
-
-                    if self._needs_full_fetch(post):
-                        full = self._browser_fetch_api(
-                            page, _SHOW_API, {"id": post["id"]}
-                        )
-                        if full:
-                            post["text"] = full.get("text", post.get("text", ""))
-                            post["title"] = full.get("title", post.get("title"))
-                        # 长文拉取也需要间隔
-                        page.wait_for_timeout(3000)
-
-                    img_urls = self._extract_image_urls(post.get("text"))
-                    self.db.save_post(post)
-                    for seq, url in enumerate(img_urls):
-                        pending_images.append((post["id"], url, seq))
-
-                    total_saved += 1
-                    new_on_page += 1
-                    self.sync_count = total_saved
-                    self.sync_progress = f"已保存 {total_saved} 条帖子"
-
-                _log(f"Page {pg}: {new_on_page} new, {len(posts) - new_on_page} skipped")
-                # 增量模式：如果整页都是已有帖子，说明已追上历史，提前停止
-                if new_on_page == 0:
-                    _log(f"Page {pg}: all posts already exist, stopping incremental sync")
+                new_on_page = sum(
+                    1 for p in posts if not self.db.get_post(p["id"])
+                )
+                if new_on_page > 0:
+                    _log(f"Phase 2: found {new_on_page} new posts at page {pg}")
                     break
+
+                _log(f"Phase 2: page {pg} all synced, locating...")
+                page_new, page_updated = self._process_posts(
+                    page, posts, pending_images, all_timestamps
+                )
+                updated_count += page_updated
                 pg += 1
-                # 5 秒间隔，降低被风控的风险
+                locate_attempts += 1
+                remaining -= 1
                 page.wait_for_timeout(5000)
 
-            # 批量下载图片
-            if pending_images:
-                self.sync_progress = f"正在下载 {len(pending_images)} 张图片..."
-                _log(f"Downloading {len(pending_images)} images...")
-                for i, (post_id, url, seq) in enumerate(pending_images):
-                    local = self._download_image(post_id, url, seq)
-                    self.db.save_image(post_id, url, local, seq)
-                    if (i + 1) % 10 == 0:
-                        self.sync_progress = f"图片 {i+1}/{len(pending_images)}"
+            while remaining > 0:
+                data = self._fetch_with_waf_retry(page, user_id, pg)
+                if data is None:
+                    break
+
+                posts = self._parse_timeline(data)
+                if not posts:
+                    _log(f"Phase 2: page {pg} empty, history done")
+                    if cursor is None:
+                        cursor = self._make_cursor(all_timestamps)
+                    cursor["history_done"] = True
+                    break
+
+                remaining -= 1
+                self.sync_progress = (
+                    f"正在同步历史帖子 (第 {pg} 页)，"
+                    f"已保存 {new_count} 条新帖"
+                )
+
+                page_new, page_updated = self._process_posts(
+                    page, posts, pending_images, all_timestamps
+                )
+                new_count += page_new
+                updated_count += page_updated
+                self.sync_count = new_count
+
+                pg += 1
+                page.wait_for_timeout(5000)
+
+            if cursor is None:
+                cursor = self._make_cursor(all_timestamps)
+            if all_timestamps:
+                cursor["newest_synced_at"] = max(
+                    cursor.get("newest_synced_at", 0), max(all_timestamps)
+                )
+                cursor["oldest_synced_at"] = min(
+                    cursor.get("oldest_synced_at", float("inf")),
+                    min(all_timestamps),
+                )
+            cursor["next_history_page"] = pg
+            cursor["total_posts"] = self.db.count_posts(user_id)
+            self.db.set_sync_cursor(user_id, cursor)
 
         except Exception as e:
             _log(f"_sync_all error: {e}")
@@ -195,11 +285,84 @@ class XueqiuScraper:
             self.sync_progress = f"同步出错: {e}"
             raise
 
+        self._finish_sync(user_id, new_count, updated_count, pending_images, page)
+
+    def _fetch_with_waf_retry(self, page, user_id: int, pg: int) -> Optional[dict]:
+        """Fetch a timeline page with WAF retry logic."""
+        for attempt in range(4):
+            data = self._browser_fetch_api(
+                page, _TIMELINE_API, {"user_id": user_id, "page": pg}
+            )
+            if data is not None:
+                return data
+            if attempt < 3:
+                _log(f"WAF retry {attempt + 1}/3 for page {pg}")
+                self._ensure_waf_ready(page)
+        _log(f"WAF retries exhausted for page {pg}")
+        return None
+
+    def _process_posts(
+        self, page, posts: list, pending_images: list, all_timestamps: list
+    ) -> tuple[int, int]:
+        """Process a page of posts: upsert, collect images. Returns (new, updated)."""
+        new_count = 0
+        updated_count = 0
+        for post in posts:
+            existing = self.db.get_post(post["id"])
+            all_timestamps.append(post["created_at"])
+
+            if not existing and self._needs_full_fetch(post):
+                full = self._browser_fetch_api(
+                    page, _SHOW_API, {"id": post["id"]}
+                )
+                if full:
+                    post["text"] = full.get("text", post.get("text", ""))
+                    post["title"] = full.get("title", post.get("title"))
+                page.wait_for_timeout(3000)
+
+            self.db.save_post(post)
+
+            if existing:
+                updated_count += 1
+            else:
+                new_count += 1
+                img_urls = self._extract_image_urls(post.get("text"))
+                for seq, url in enumerate(img_urls):
+                    pending_images.append((post["id"], url, seq))
+
+        return new_count, updated_count
+
+    @staticmethod
+    def _make_cursor(timestamps: list) -> dict:
+        """Create a new cursor from collected timestamps."""
+        return {
+            "newest_synced_at": max(timestamps) if timestamps else 0,
+            "oldest_synced_at": min(timestamps) if timestamps else 0,
+            "next_history_page": 1,
+            "total_posts": 0,
+            "history_done": False,
+            "has_gap": False,
+        }
+
+    def _finish_sync(
+        self, user_id: int, new_count: int, updated_count: int,
+        pending_images: list, page,
+    ):
+        """Download images and finalize sync status."""
+        if pending_images:
+            self.sync_progress = f"正在下载 {len(pending_images)} 张图片..."
+            _log(f"Downloading {len(pending_images)} images...")
+            for i, (post_id, url, seq) in enumerate(pending_images):
+                local = self._download_image(post_id, url, seq)
+                self.db.save_image(post_id, url, local, seq)
+                if (i + 1) % 10 == 0:
+                    self.sync_progress = f"图片 {i+1}/{len(pending_images)}"
+
         self.db.set_sync_state("last_sync_time", str(int(time.time())))
-        self.db.set_sync_state("total_synced", str(total_saved))
+        self.db.set_sync_state("total_synced", str(new_count))
         self.sync_status = "done"
-        self.sync_progress = f"同步完成，共 {total_saved} 条"
-        _log(f"Sync complete: {total_saved} posts, {len(pending_images)} images")
+        self.sync_progress = f"同步完成：{new_count} 条新帖，{updated_count} 条更新"
+        _log(f"Sync complete: {new_count} new, {updated_count} updated, {len(pending_images)} images")
 
     def _ensure_waf_ready(self, page):
         """导航到雪球首页，等待页面正常加载（非 WAF challenge 页面）。

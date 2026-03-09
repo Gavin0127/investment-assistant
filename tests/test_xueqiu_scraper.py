@@ -197,3 +197,199 @@ class TestCountPosts:
         scraper.db.save_post({"id": 3, "user_id": 222, "text": "c", "created_at": 3000})
         assert scraper.db.count_posts(111) == 2
         assert scraper.db.count_posts(222) == 1
+
+
+class TestSyncAllV2:
+    """双阶段增量同步算法测试。"""
+
+    @staticmethod
+    def _make_posts(start_id, count, user_id=111, base_ts=2000000000000, ts_step=86400000):
+        """生成模拟帖子列表。start_id 最大（最新），id 递减，created_at 也递减。
+
+        ts_step 为正数，created_at = base_ts + id * ts_step，所以 id 越大 created_at 越大。
+        """
+        return {
+            "statuses": [
+                {
+                    "id": start_id - i,
+                    "user_id": user_id,
+                    "type": "2",
+                    "text": f"<p>Post {start_id - i}</p>",
+                    "description": f"Post {start_id - i}",
+                    "created_at": base_ts + (start_id - i) * ts_step,
+                }
+                for i in range(count)
+            ]
+        }
+
+    def test_first_sync_saves_posts_and_creates_cursor(self, scraper):
+        """首次同步：无 cursor，从 page 1 开始，保存帖子并创建 cursor。"""
+        mock_page = MagicMock()
+        mock_page.wait_for_timeout = MagicMock()
+
+        pages = {
+            1: self._make_posts(20, 10),
+            2: self._make_posts(10, 10),
+            3: {"statuses": []},
+        }
+
+        def fake_fetch(pg, path, params):
+            if path == "/v4/statuses/user_timeline.json":
+                return pages.get(params.get("page"))
+            return None
+
+        scraper._browser_fetch_api = fake_fetch
+        scraper._ensure_waf_ready = MagicMock()
+
+        scraper._sync_all(mock_page, user_id=111, max_pages=5)
+
+        assert scraper.db.count_posts(111) == 20
+        cursor = scraper.db.get_sync_cursor(111)
+        assert cursor is not None
+        assert cursor["history_done"] is True
+        assert cursor["has_gap"] is False
+
+    def test_incremental_no_new_posts(self, scraper):
+        """增量同步：没有新帖，阶段 1 碰到 newest_synced_at 就连上，跳到阶段 2 深挖。"""
+        mock_page = MagicMock()
+        mock_page.wait_for_timeout = MagicMock()
+
+        for i in range(5):
+            pid = 20 - i
+            scraper.db.save_post({
+                "id": pid, "user_id": 111, "text": f"old {pid}",
+                "created_at": 2000000000000 + pid * 86400000,
+            })
+        scraper.db.set_sync_cursor(111, {
+            "newest_synced_at": 2000000000000 + 20 * 86400000,
+            "oldest_synced_at": 2000000000000 + 16 * 86400000,
+            "next_history_page": 2,
+            "total_posts": 5,
+            "history_done": False,
+            "has_gap": False,
+        })
+
+        pages = {
+            1: self._make_posts(20, 5),
+            2: self._make_posts(15, 5),
+            3: {"statuses": []},
+        }
+
+        def fake_fetch(pg, path, params):
+            if path == "/v4/statuses/user_timeline.json":
+                return pages.get(params.get("page"))
+            return None
+
+        scraper._browser_fetch_api = fake_fetch
+        scraper._ensure_waf_ready = MagicMock()
+
+        scraper._sync_all(mock_page, user_id=111, max_pages=5)
+
+        assert scraper.db.count_posts(111) == 10
+        cursor = scraper.db.get_sync_cursor(111)
+        assert cursor["history_done"] is True
+
+    def test_incremental_with_new_posts(self, scraper):
+        """增量同步：有新帖，阶段 1 追新后连上，阶段 2 继续深挖。"""
+        mock_page = MagicMock()
+        mock_page.wait_for_timeout = MagicMock()
+
+        for i in range(10):
+            pid = 20 - i
+            scraper.db.save_post({
+                "id": pid, "user_id": 111, "text": f"old {pid}",
+                "created_at": 2000000000000 + pid * 86400000,
+            })
+        scraper.db.set_sync_cursor(111, {
+            "newest_synced_at": 2000000000000 + 20 * 86400000,
+            "oldest_synced_at": 2000000000000 + 11 * 86400000,
+            "next_history_page": 3,
+            "total_posts": 10,
+            "history_done": False,
+            "has_gap": False,
+        })
+
+        pages = {
+            1: self._make_posts(25, 10),  # id 25-16, 5 new + 5 old
+            3: self._make_posts(10, 5),   # id 10-6
+            4: self._make_posts(5, 5),    # id 5-1
+            5: {"statuses": []},
+        }
+
+        def fake_fetch(pg, path, params):
+            if path == "/v4/statuses/user_timeline.json":
+                return pages.get(params.get("page"), {"statuses": []})
+            return None
+
+        scraper._browser_fetch_api = fake_fetch
+        scraper._ensure_waf_ready = MagicMock()
+
+        scraper._sync_all(mock_page, user_id=111, max_pages=5)
+
+        cursor = scraper.db.get_sync_cursor(111)
+        assert cursor is not None
+        assert cursor["newest_synced_at"] == 2000000000000 + 25 * 86400000
+        for pid in range(21, 26):
+            assert scraper.db.get_post(pid) is not None
+
+    def test_gap_created_when_not_connected(self, scraper):
+        """阶段 1 用完配额没连上时，标记 has_gap=True。"""
+        mock_page = MagicMock()
+        mock_page.wait_for_timeout = MagicMock()
+
+        for i in range(10):
+            pid = 10 - i
+            scraper.db.save_post({
+                "id": pid, "user_id": 111, "text": f"old {pid}",
+                "created_at": 2000000000000 + pid * 86400000,
+            })
+        scraper.db.set_sync_cursor(111, {
+            "newest_synced_at": 2000000000000 + 10 * 86400000,
+            "oldest_synced_at": 2000000000000 + 1 * 86400000,
+            "next_history_page": 2,
+            "total_posts": 10,
+            "history_done": False,
+            "has_gap": False,
+        })
+
+        pages = {
+            1: self._make_posts(70, 20),  # id 70-51
+            2: self._make_posts(50, 20),  # id 50-31
+        }
+
+        def fake_fetch(pg, path, params):
+            if path == "/v4/statuses/user_timeline.json":
+                return pages.get(params.get("page"), {"statuses": []})
+            return None
+
+        scraper._browser_fetch_api = fake_fetch
+        scraper._ensure_waf_ready = MagicMock()
+
+        scraper._sync_all(mock_page, user_id=111, max_pages=2)
+
+        cursor = scraper.db.get_sync_cursor(111)
+        assert cursor["has_gap"] is True
+        assert cursor["newest_synced_at"] == 2000000000000 + 70 * 86400000
+
+    def test_history_done_flag(self, scraper):
+        """深挖到空页时标记 history_done=True。"""
+        mock_page = MagicMock()
+        mock_page.wait_for_timeout = MagicMock()
+
+        pages = {
+            1: self._make_posts(5, 5),
+            2: {"statuses": []},
+        }
+
+        def fake_fetch(pg, path, params):
+            if path == "/v4/statuses/user_timeline.json":
+                return pages.get(params.get("page"), {"statuses": []})
+            return None
+
+        scraper._browser_fetch_api = fake_fetch
+        scraper._ensure_waf_ready = MagicMock()
+
+        scraper._sync_all(mock_page, user_id=111, max_pages=5)
+
+        cursor = scraper.db.get_sync_cursor(111)
+        assert cursor["history_done"] is True
