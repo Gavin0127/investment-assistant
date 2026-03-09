@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 _BASE_URL = "https://xueqiu.com"
 _TIMELINE_API = "/v4/statuses/user_timeline.json"
 _SHOW_API = "/statuses/show.json"
+_PAGE_SIZE = 20  # 雪球 API 每页返回条数
 
 
 def _log(msg: str):
@@ -197,10 +198,10 @@ class XueqiuScraper:
 
             if cursor is None:
                 existing_count = self.db.count_posts(user_id)
-                start_page = (existing_count // 20 + 1) if existing_count > 0 else 1
+                start_page = (existing_count // _PAGE_SIZE + 1) if existing_count > 0 else 1
                 _log(f"Phase 2: first V2 sync, existing={existing_count}, start_page={start_page}")
             else:
-                page_offset = new_count // 20
+                page_offset = new_count // _PAGE_SIZE
                 start_page = cursor.get("next_history_page", 1) + page_offset
 
             pg = start_page
@@ -208,6 +209,7 @@ class XueqiuScraper:
             _log(f"Phase 2: starting at page {pg} (remaining={remaining})")
 
             locate_attempts = 0
+            located_posts = None  # I1: 定位到的页直接传给深挖循环，避免重复请求
             while locate_attempts < 3 and remaining > 0:
                 data = self._fetch_with_waf_retry(page, user_id, pg)
                 if data is None:
@@ -221,11 +223,14 @@ class XueqiuScraper:
                     cursor["history_done"] = True
                     break
 
-                new_on_page = sum(
-                    1 for p in posts if not self.db.get_post(p["id"])
-                )
+                # I4: 批量检查是否有新帖，避免逐条查询
+                existing_ids = {
+                    p["id"] for p in posts if self.db.get_post(p["id"])
+                }
+                new_on_page = len(posts) - len(existing_ids)
                 if new_on_page > 0:
                     _log(f"Phase 2: found {new_on_page} new posts at page {pg}")
+                    located_posts = posts
                     break
 
                 _log(f"Phase 2: page {pg} all synced, locating...")
@@ -239,17 +244,22 @@ class XueqiuScraper:
                 page.wait_for_timeout(5000)
 
             while remaining > 0:
-                data = self._fetch_with_waf_retry(page, user_id, pg)
-                if data is None:
-                    break
+                # I1: 首次迭代复用定位循环已拿到的数据
+                if located_posts is not None:
+                    posts = located_posts
+                    located_posts = None
+                else:
+                    data = self._fetch_with_waf_retry(page, user_id, pg)
+                    if data is None:
+                        break
 
-                posts = self._parse_timeline(data)
-                if not posts:
-                    _log(f"Phase 2: page {pg} empty, history done")
-                    if cursor is None:
-                        cursor = self._make_cursor(all_timestamps)
-                    cursor["history_done"] = True
-                    break
+                    posts = self._parse_timeline(data)
+                    if not posts:
+                        _log(f"Phase 2: page {pg} empty, history done")
+                        if cursor is None:
+                            cursor = self._make_cursor(all_timestamps)
+                        cursor["history_done"] = True
+                        break
 
                 remaining -= 1
                 self.sync_progress = (
@@ -274,7 +284,7 @@ class XueqiuScraper:
                     cursor.get("newest_synced_at", 0), max(all_timestamps)
                 )
                 cursor["oldest_synced_at"] = min(
-                    cursor.get("oldest_synced_at", float("inf")),
+                    cursor.get("oldest_synced_at", 9999999999999),
                     min(all_timestamps),
                 )
             cursor["next_history_page"] = pg
@@ -361,7 +371,7 @@ class XueqiuScraper:
                     self.sync_progress = f"图片 {i+1}/{len(pending_images)}"
 
         self.db.set_sync_state("last_sync_time", str(int(time.time())))
-        self.db.set_sync_state("total_synced", str(new_count))
+        self.db.set_sync_state("total_synced", str(new_count + updated_count))
         self.sync_status = "done"
         self.sync_progress = f"同步完成：{new_count} 条新帖，{updated_count} 条更新"
         _log(f"Sync complete: {new_count} new, {updated_count} updated, {len(pending_images)} images")

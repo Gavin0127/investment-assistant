@@ -1,6 +1,7 @@
 """SQLite data layer for Xueqiu posts with FTS5 full-text search."""
 
 import contextlib
+import json
 import sqlite3
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
@@ -279,7 +280,6 @@ class XueqiuDB:
 
     def get_sync_cursor(self, user_id: int) -> Optional[dict]:
         """Get per-user sync cursor. Returns None if never synced."""
-        import json
         raw = self.get_sync_state(f"sync_cursor:{user_id}")
         if raw is None:
             return None
@@ -287,7 +287,6 @@ class XueqiuDB:
 
     def set_sync_cursor(self, user_id: int, cursor: dict) -> None:
         """Save per-user sync cursor."""
-        import json
         self.set_sync_state(f"sync_cursor:{user_id}", json.dumps(cursor))
 
     def count_posts(self, user_id: int) -> int:
