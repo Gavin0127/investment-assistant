@@ -267,6 +267,27 @@ class XueqiuDB:
             )
             conn.commit()
 
+    def get_sync_cursor(self, user_id: int) -> Optional[dict]:
+        """Get per-user sync cursor. Returns None if never synced."""
+        import json
+        raw = self.get_sync_state(f"sync_cursor:{user_id}")
+        if raw is None:
+            return None
+        return json.loads(raw)
+
+    def set_sync_cursor(self, user_id: int, cursor: dict) -> None:
+        """Save per-user sync cursor."""
+        import json
+        self.set_sync_state(f"sync_cursor:{user_id}", json.dumps(cursor))
+
+    def count_posts(self, user_id: int) -> int:
+        """Count posts for a specific user."""
+        with self._get_conn() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) FROM posts WHERE user_id = ?", (user_id,)
+            ).fetchone()
+            return row[0]
+
     def add_user(self, user_id: int, nickname: str) -> None:
         with self._get_conn() as conn:
             conn.execute(

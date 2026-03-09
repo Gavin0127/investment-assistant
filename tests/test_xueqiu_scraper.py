@@ -147,3 +147,53 @@ class TestMaxPages:
         sig = inspect.signature(scraper._sync_all)
         assert "max_pages" in sig.parameters
         assert sig.parameters["max_pages"].default == 5
+
+
+class TestSyncCursor:
+    """Per-user sync cursor CRUD."""
+
+    def test_get_cursor_returns_none_for_new_user(self, scraper):
+        assert scraper.db.get_sync_cursor(12345) is None
+
+    def test_set_and_get_cursor(self, scraper):
+        cursor = {
+            "newest_synced_at": 1709856000000,
+            "oldest_synced_at": 1609856000000,
+            "next_history_page": 6,
+            "total_posts": 100,
+            "history_done": False,
+            "has_gap": False,
+        }
+        scraper.db.set_sync_cursor(12345, cursor)
+        result = scraper.db.get_sync_cursor(12345)
+        assert result == cursor
+
+    def test_set_cursor_overwrites(self, scraper):
+        scraper.db.set_sync_cursor(12345, {"newest_synced_at": 100, "oldest_synced_at": 50,
+            "next_history_page": 2, "total_posts": 10, "history_done": False, "has_gap": False})
+        scraper.db.set_sync_cursor(12345, {"newest_synced_at": 200, "oldest_synced_at": 50,
+            "next_history_page": 5, "total_posts": 50, "history_done": False, "has_gap": True})
+        result = scraper.db.get_sync_cursor(12345)
+        assert result["newest_synced_at"] == 200
+        assert result["next_history_page"] == 5
+        assert result["has_gap"] is True
+
+    def test_different_users_independent(self, scraper):
+        scraper.db.set_sync_cursor(111, {"newest_synced_at": 100, "oldest_synced_at": 50,
+            "next_history_page": 2, "total_posts": 10, "history_done": False, "has_gap": False})
+        scraper.db.set_sync_cursor(222, {"newest_synced_at": 200, "oldest_synced_at": 80,
+            "next_history_page": 8, "total_posts": 80, "history_done": True, "has_gap": False})
+        assert scraper.db.get_sync_cursor(111)["next_history_page"] == 2
+        assert scraper.db.get_sync_cursor(222)["next_history_page"] == 8
+
+
+class TestCountPosts:
+    def test_count_empty(self, scraper):
+        assert scraper.db.count_posts(12345) == 0
+
+    def test_count_after_save(self, scraper):
+        scraper.db.save_post({"id": 1, "user_id": 111, "text": "a", "created_at": 1000})
+        scraper.db.save_post({"id": 2, "user_id": 111, "text": "b", "created_at": 2000})
+        scraper.db.save_post({"id": 3, "user_id": 222, "text": "c", "created_at": 3000})
+        assert scraper.db.count_posts(111) == 2
+        assert scraper.db.count_posts(222) == 1
