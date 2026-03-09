@@ -171,6 +171,10 @@ class XueqiuScraper:
                     self.sync_progress = f"已保存 {total_saved} 条帖子"
 
                 _log(f"Page {pg}: {new_on_page} new, {len(posts) - new_on_page} skipped")
+                # 增量模式：如果整页都是已有帖子，说明已追上历史，提前停止
+                if new_on_page == 0:
+                    _log(f"Page {pg}: all posts already exist, stopping incremental sync")
+                    break
                 pg += 1
                 # 5 秒间隔，降低被风控的风险
                 page.wait_for_timeout(5000)
