@@ -1056,11 +1056,15 @@ def api_xueqiu_sync_status():
     scraper = _get_xueqiu_scraper()
     db = _get_xueqiu_db()
     last_sync = db.get_sync_state("last_sync_time")
+    # 如果请求带了 user_id，返回 per-user cursor 信息
+    user_id = request.args.get("user_id", type=int)
+    cursor = db.get_sync_cursor(user_id) if user_id else None
     return jsonify({
         "status": scraper.sync_status,
         "progress": scraper.sync_progress,
         "count": scraper.sync_count,
         "last_sync_time": last_sync,
+        "cursor": cursor,
     })
 
 
