@@ -127,16 +127,17 @@ class ChatEngine:
         self.chat_db = chat_db
         self.storage = storage
 
-    def stream_reply(self, session_id: str, user_message: str):
-        """生成器，yield SSE 事件 dict。"""
+    def stream_reply(self, session_id: str, user_message: str, model: str | None = None):
+        """生成器，yield SSE 事件 dict。model 可覆盖默认模型。"""
         self.chat_db.add_message(session_id, "user", user_message)
         messages = self._build_messages(session_id, user_message)
+        use_model = model or self.llm.model
 
         thinking_buf = []
         content_buf = []
         try:
             stream = self.llm.client.chat.completions.create(
-                model=self.llm.model,
+                model=use_model,
                 messages=messages,
                 stream=True,
                 timeout=300,

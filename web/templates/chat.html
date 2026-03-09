@@ -138,6 +138,13 @@
                           placeholder="输入消息... (Enter 发送, Shift+Enter 换行)"
                           rows="1"
                           class="chat-textarea flex-1 px-4 py-2.5 border border-gray-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent disabled:bg-gray-50 disabled:text-gray-400"></textarea>
+                <select x-model="selectedModel"
+                        :disabled="streaming"
+                        class="px-3 py-2.5 border border-gray-300 rounded-xl text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent disabled:bg-gray-50 disabled:text-gray-400">
+                    <template x-for="m in models" :key="m.value">
+                        <option :value="m.value" x-text="m.label"></option>
+                    </template>
+                </select>
                 <button @click="sendMessage()"
                         :disabled="!inputText.trim() || streaming"
                         class="px-4 py-2.5 bg-blue-600 text-white rounded-xl text-sm font-medium hover:bg-blue-700 disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors flex-shrink-0">
@@ -166,6 +173,11 @@ function chatApp() {
         inputText: '',
         loading: false,
         streaming: false,
+        selectedModel: 'default',
+        models: [
+            { value: 'default', label: '默认模型' },
+            { value: 'gpt-5.4-xhigh', label: 'GPT-5.4 xHigh' },
+        ],
 
         async init() {
             await this.loadSessions();
@@ -253,7 +265,7 @@ function chatApp() {
                 const resp = await fetch(`/api/chat/sessions/${this.currentSessionId}/messages`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ content: text })
+                    body: JSON.stringify({ content: text, model: this.selectedModel === 'default' ? null : this.selectedModel })
                 });
 
                 if (!resp.ok) {

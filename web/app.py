@@ -1166,13 +1166,14 @@ def api_chat_get_messages(session_id):
 def api_chat_send(session_id):
     data = request.json or {}
     content = data.get("content", "").strip()
+    model = data.get("model") or None
     if not content:
         return jsonify({"error": "消息不能为空"}), 400
 
     engine = _get_chat_engine()
 
     def generate():
-        for event in engine.stream_reply(session_id, content):
+        for event in engine.stream_reply(session_id, content, model=model):
             yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
 
     return Response(
