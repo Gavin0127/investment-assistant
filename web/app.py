@@ -970,9 +970,11 @@ def api_xueqiu_list_posts():
     query = request.args.get('q', '') or None
     start_date = request.args.get('start_date', '') or None
     end_date = request.args.get('end_date', '') or None
+    user_id = request.args.get('user_id', type=int) or None
     posts, total = db.list_posts(
         page=page, per_page=per_page, post_type=post_type,
         query=query, start_date=start_date, end_date=end_date,
+        user_id=user_id,
     )
     return jsonify({"posts": posts, "total": total, "page": page, "per_page": per_page})
 
@@ -1029,12 +1031,12 @@ def api_xueqiu_sync():
             scraper.sync_status = "idle"
         else:
             return jsonify({"error": "同步正在进行中"}), 409
-    # M2: 默认 user_id 为逸修1，后续可改为从配置读取
     user_id = data.get("user_id", 1936609590)
+    max_pages = min(data.get("max_pages", 5), 200)
 
     def run_sync():
         try:
-            scraper.login_and_sync(user_id, headless=False)
+            scraper.login_and_sync(user_id, headless=False, max_pages=max_pages)
         except Exception as e:
             scraper.sync_status = "error"
             scraper.sync_progress = str(e)
@@ -1058,6 +1060,130 @@ def api_xueqiu_sync_status():
         "count": scraper.sync_count,
         "last_sync_time": last_sync,
     })
+
+
+@app.route('/api/xueqiu/users', methods=['GET'])
+@requires_auth
+def api_xueqiu_list_users():
+    db = _get_xueqiu_db()
+    return jsonify({"users": db.list_users()})
+
+
+@app.route('/api/xueqiu/users', methods=['POST'])
+@requires_auth
+def api_xueqiu_add_user():
+    data = request.json or {}
+    user_id = data.get("user_id")
+    nickname = data.get("nickname", "").strip()
+    if not user_id or not isinstance(user_id, int) or user_id <= 0:
+        return jsonify({"error": "user_id 必须为正整数"}), 400
+    if not nickname:
+        return jsonify({"error": "昵称不能为空"}), 400
+    db = _get_xueqiu_db()
+    existing = db.get_user(user_id)
+    if existing:
+        return jsonify({"error": "用户已存在"}), 409
+    db.add_user(user_id, nickname)
+    return jsonify({"success": True, "user": db.get_user(user_id)})
+
+
+@app.route('/api/xueqiu/users/<int:user_id>', methods=['DELETE'])
+@requires_auth
+def api_xueqiu_remove_user(user_id):
+    db = _get_xueqiu_db()
+    db.remove_user(user_id)
+    return jsonify({"success": True})
+
+
+# ==================== AI 聊天 API ====================
+
+_chat_engine = None
+_chat_db = None
+
+
+def _get_chat_db():
+    global _chat_db
+    if _chat_db is None:
+        from core.chat import ChatDB
+        db_path = os.path.join(str(storage.base_dir), "data", "chat.db")
+        _chat_db = ChatDB(db_path)
+    return _chat_db
+
+
+def _get_chat_engine():
+    global _chat_engine
+    if _chat_engine is None:
+        from core.chat import ChatEngine
+        _chat_engine = ChatEngine(
+            llm_client=get_client(),
+            xueqiu_db=_get_xueqiu_db(),
+            chat_db=_get_chat_db(),
+            storage=storage,
+        )
+    return _chat_engine
+
+
+@app.route('/chat')
+@requires_auth
+def chat_page():
+    return render_template('chat.html')
+
+
+@app.route('/api/chat/sessions', methods=['GET'])
+@requires_auth
+def api_chat_list_sessions():
+    db = _get_chat_db()
+    return jsonify({"sessions": db.list_sessions()})
+
+
+@app.route('/api/chat/sessions', methods=['POST'])
+@requires_auth
+def api_chat_create_session():
+    db = _get_chat_db()
+    sid = db.create_session()
+    sessions = db.list_sessions()
+    session_data = next((s for s in sessions if s["id"] == sid), None)
+    return jsonify(session_data)
+
+
+@app.route('/api/chat/sessions/<session_id>', methods=['DELETE'])
+@requires_auth
+def api_chat_delete_session(session_id):
+    db = _get_chat_db()
+    db.delete_session(session_id)
+    return jsonify({"success": True})
+
+
+@app.route('/api/chat/sessions/<session_id>/messages', methods=['GET'])
+@requires_auth
+def api_chat_get_messages(session_id):
+    db = _get_chat_db()
+    return jsonify({"messages": db.get_messages(session_id)})
+
+
+@app.route('/api/chat/sessions/<session_id>/messages', methods=['POST'])
+@requires_auth
+def api_chat_send(session_id):
+    data = request.json or {}
+    content = data.get("content", "").strip()
+    if not content:
+        return jsonify({"error": "消息不能为空"}), 400
+
+    engine = _get_chat_engine()
+
+    def generate():
+        for event in engine.stream_reply(session_id, content):
+            yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+
+    return Response(
+        generate(),
+        mimetype='text/event-stream',
+        headers={
+            'Cache-Control': 'no-cache',
+            'X-Accel-Buffering': 'no',
+            'Connection': 'keep-alive',
+        }
+    )
 
 
 if __name__ == '__main__':

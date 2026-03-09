@@ -117,6 +117,16 @@ class TestListPosts:
         assert total == 1
         assert posts[0]["is_column"] == 1
 
+    def test_filter_by_user_id(self, db):
+        db.save_post({
+            "id": 100, "user_id": 999, "type": "2",
+            "text": "Other user", "description": "Other",
+            "created_at": 9000,
+        })
+        posts, total = db.list_posts(user_id=999)
+        assert total == 1
+        assert posts[0]["user_id"] == 999
+
 
 class TestFTS:
     def test_search(self, db):
@@ -142,3 +152,41 @@ class TestSyncState:
         assert db.get_sync_state("last_post_id") == "99999"
         db.set_sync_state("last_post_id", "100000")
         assert db.get_sync_state("last_post_id") == "100000"
+
+
+class TestUserManagement:
+    def test_add_and_get_user(self, db):
+        db.add_user(1936609590, "逸修1")
+        user = db.get_user(1936609590)
+        assert user is not None
+        assert user["nickname"] == "逸修1"
+        assert user["is_active"] == 1
+
+    def test_add_duplicate_user(self, db):
+        db.add_user(1936609590, "逸修1")
+        db.add_user(1936609590, "逸修1改名")
+        user = db.get_user(1936609590)
+        assert user["nickname"] == "逸修1改名"
+
+    def test_list_users(self, db):
+        db.add_user(1, "用户A")
+        db.add_user(2, "用户B")
+        users = db.list_users()
+        assert len(users) == 2
+
+    def test_remove_user(self, db):
+        db.add_user(1, "用户A")
+        db.remove_user(1)
+        assert db.get_user(1) is None
+
+    def test_list_users_empty(self, db):
+        assert db.list_users() == []
+
+    def test_xueqiu_users_table_created(self, db):
+        import sqlite3
+        conn = sqlite3.connect(db.db_path)
+        tables = {r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        ).fetchall()}
+        assert "xueqiu_users" in tables
+        conn.close()
