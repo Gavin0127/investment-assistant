@@ -131,6 +131,11 @@ User Feedback → Preference Learning → 下一轮研究上下文
 
 ## 最近重大变更
 
+- 2026-03-09: 雪球 V2 多用户爬取 + AI 聊天助手
+  - 多用户管理（xueqiu_users 表）、批次控制（max_pages）、同步进度展示
+  - AI 聊天助手：SSE 流式、思考过程折叠、会话管理、基于雪球帖子的上下文构建
+  - 新增 `core/chat.py`（ChatDB + ChatEngine）、`web/templates/chat.html`
+  - 设计文档: `docs/plans/2026-03-09-xueqiu-v2-chat-design.md`
 - 2026-03-08: 雪球内容爬取与展示
   - 设计文档: `docs/plans/2026-03-08-xueqiu-scraper-design.md`
 - 2026-03-08: 利润跟踪模块（原材料价格 → 利润敏感性）
