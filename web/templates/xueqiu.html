@@ -50,7 +50,7 @@
       <div class="relative">
         <button @click="showSyncPanel = !showSyncPanel" :disabled="syncing"
                 class="bg-gray-800 hover:bg-gray-900 text-white px-4 py-2 rounded-lg text-sm disabled:opacity-50 transition-colors whitespace-nowrap">
-          <span x-show="!syncing">同步数据 ▾</span>
+          <span x-show="!syncing" x-text="!syncCursor ? '开始同步 ▾' : syncCursor.history_done ? '更新数据 ▾' : '继续同步 ▾'"></span>
           <span x-show="syncing" x-text="syncProgress || '同步中...'"></span>
         </button>
         <!-- 同步设置面板 -->
@@ -163,8 +163,13 @@
       </div>
 
       <!-- 同步状态 -->
-      <div x-show="lastSyncTime" class="px-3 py-2 border-t border-gray-100 flex-shrink-0">
-        <span class="text-xs text-gray-400" x-text="'上次同步: ' + lastSyncTime"></span>
+      <div x-show="lastSyncTime || syncCursor" class="px-3 py-2 border-t border-gray-100 flex-shrink-0">
+        <div class="flex items-center gap-2 text-xs text-gray-400 flex-wrap">
+          <span x-show="syncCursor" x-text="'已同步 ' + (syncCursor?.total_posts || 0) + ' 条'"></span>
+          <span x-show="syncCursor && syncCursor.history_done" class="text-green-500">历史已全部同步</span>
+          <span x-show="syncCursor && !syncCursor.history_done" class="text-amber-500">历史同步中</span>
+          <span x-show="lastSyncTime" x-text="'上次: ' + lastSyncTime"></span>
+        </div>
       </div>
     </div>
 
@@ -243,6 +248,7 @@ function xueqiuApp() {
     newNickname: '',
     maxPages: 5,
     showSyncPanel: false,
+    syncCursor: null,
 
     async loadUsers() {
       try {
@@ -349,6 +355,7 @@ function xueqiuApp() {
       this.page = 1;
       this.hasMore = true;
       this.loadPosts(false);
+      this.fetchSyncStatus();
     },
 
     loadMore() {
@@ -396,14 +403,14 @@ function xueqiuApp() {
       }
     },
 
-    // I9: 匹配后端实际状态值 syncing / logging_in
     pollSyncStatus() {
       const poll = setInterval(async () => {
         try {
-          const resp = await fetch('/api/xueqiu/sync/status');
+          const params = this.selectedUserId ? `?user_id=${this.selectedUserId}` : '';
+          const resp = await fetch('/api/xueqiu/sync/status' + params);
           const data = await resp.json();
           if (data.status === 'syncing' || data.status === 'logging_in') {
-            this.syncProgress = data.progress ? ('同步中 ' + data.progress) : ('已同步 ' + (data.count || 0) + ' 条');
+            this.syncProgress = data.progress || ('已同步 ' + (data.count || 0) + ' 条');
           } else {
             clearInterval(poll);
             this.syncing = false;
@@ -416,6 +423,7 @@ function xueqiuApp() {
                 const d = new Date(parseInt(data.last_sync_time) * 1000);
                 this.lastSyncTime = d.toLocaleString('zh-CN');
               }
+              this.syncCursor = data.cursor;
               this.resetAndLoad();
             }
           }
@@ -429,12 +437,14 @@ function xueqiuApp() {
 
     async fetchSyncStatus() {
       try {
-        const resp = await fetch('/api/xueqiu/sync/status');
+        const params = this.selectedUserId ? `?user_id=${this.selectedUserId}` : '';
+        const resp = await fetch('/api/xueqiu/sync/status' + params);
         const data = await resp.json();
         if (data.last_sync_time) {
           const d = new Date(parseInt(data.last_sync_time) * 1000);
           this.lastSyncTime = d.toLocaleString('zh-CN');
         }
+        this.syncCursor = data.cursor;
       } catch (e) { /* ignore */ }
     },
 
