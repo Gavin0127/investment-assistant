@@ -47,7 +47,7 @@ class XueqiuScraper:
         self.sync_progress: str = ""
         self.sync_count: int = 0
 
-    def login_and_sync(self, user_id: int, headless: bool = False):
+    def login_and_sync(self, user_id: int, headless: bool = False, max_pages: int = 5):
         """直接用 patchright 控制浏览器，完全掌控生命周期。"""
         self.sync_status = "logging_in"
         self.sync_progress = "正在启动浏览器..."
@@ -94,7 +94,7 @@ class XueqiuScraper:
                             raise TimeoutError("登录超时（5分钟）")
 
                     # 登录成功，开始同步
-                    self._sync_all(page, user_id)
+                    self._sync_all(page, user_id, max_pages=max_pages)
 
                 finally:
                     _log("closing browser context...")
@@ -106,7 +106,7 @@ class XueqiuScraper:
             _log(f"login_and_sync error: {e}")
             raise
 
-    def _sync_all(self, page, user_id: int):
+    def _sync_all(self, page, user_id: int, max_pages: int = 5):
         """用 fetch() 精确分页同步所有帖子。"""
         self.sync_status = "syncing"
         total_saved = 0
@@ -119,12 +119,11 @@ class XueqiuScraper:
             incremental = last_id is not None
             _log(f"incremental={incremental}, last_id={last_id}")
             stop = False
-            max_pages = 200
             waf_retries = 0
 
             pg = 1
             while not stop and pg <= max_pages:
-                self.sync_progress = f"正在拉取第 {pg} 页..."
+                self.sync_progress = f"正在拉取第 {pg}/{max_pages} 页..."
                 _log(f"Fetching timeline page {pg}")
 
                 data = self._browser_fetch_api(

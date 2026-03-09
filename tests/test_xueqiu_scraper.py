@@ -132,3 +132,18 @@ class TestBrowserFetchApi:
         mock_page.content.return_value = ""
         result = scraper._browser_fetch_api(mock_page, "/test", {"page": 1})
         assert result is None
+
+
+class TestMaxPages:
+    def test_default_max_pages(self, scraper):
+        """login_and_sync 默认 max_pages=5"""
+        import inspect
+        sig = inspect.signature(scraper.login_and_sync)
+        assert sig.parameters["max_pages"].default == 5
+
+    def test_sync_all_accepts_max_pages(self, scraper):
+        """_sync_all 接受 max_pages 参数"""
+        import inspect
+        sig = inspect.signature(scraper._sync_all)
+        assert "max_pages" in sig.parameters
+        assert sig.parameters["max_pages"].default == 5
