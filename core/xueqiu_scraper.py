@@ -196,7 +196,9 @@ class XueqiuScraper:
                 return
 
             if cursor is None:
-                start_page = 1
+                existing_count = self.db.count_posts(user_id)
+                start_page = (existing_count // 20 + 1) if existing_count > 0 else 1
+                _log(f"Phase 2: first V2 sync, existing={existing_count}, start_page={start_page}")
             else:
                 page_offset = new_count // 20
                 start_page = cursor.get("next_history_page", 1) + page_offset
