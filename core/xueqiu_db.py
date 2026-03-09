@@ -46,6 +46,7 @@ class XueqiuDB:
                     target TEXT,
                     retweet_status_id INTEGER NOT NULL DEFAULT 0,
                     retweet_text TEXT,
+                    retweet_description TEXT,
                     reply_count INTEGER NOT NULL DEFAULT 0,
                     like_count INTEGER NOT NULL DEFAULT 0,
                     retweet_count INTEGER NOT NULL DEFAULT 0,
@@ -100,6 +101,11 @@ class XueqiuDB:
                     VALUES (new.id, new.title, new.text, new.description);
                 END;
             """)
+            # Migration: add retweet_description column for existing databases
+            try:
+                conn.execute("ALTER TABLE posts ADD COLUMN retweet_description TEXT")
+            except sqlite3.OperationalError:
+                pass  # column already exists
 
     def save_post(self, post: dict):
         """Upsert a post. Fields not present in dict get defaults."""
@@ -108,10 +114,12 @@ class XueqiuDB:
                 """INSERT INTO posts
                     (id, user_id, type, is_column, title, text, description,
                      created_at, edited_at, target, retweet_status_id, retweet_text,
+                     retweet_description,
                      reply_count, like_count, retweet_count, view_count)
                 VALUES
                     (:id, :user_id, :type, :is_column, :title, :text, :description,
                      :created_at, :edited_at, :target, :retweet_status_id, :retweet_text,
+                     :retweet_description,
                      :reply_count, :like_count, :retweet_count, :view_count)
                 ON CONFLICT(id) DO UPDATE SET
                     user_id=excluded.user_id,
@@ -125,6 +133,7 @@ class XueqiuDB:
                     target=excluded.target,
                     retweet_status_id=excluded.retweet_status_id,
                     retweet_text=excluded.retweet_text,
+                    retweet_description=excluded.retweet_description,
                     reply_count=excluded.reply_count,
                     like_count=excluded.like_count,
                     retweet_count=excluded.retweet_count,
@@ -144,6 +153,7 @@ class XueqiuDB:
                     "target": post.get("target"),
                     "retweet_status_id": post.get("retweet_status_id", 0),
                     "retweet_text": post.get("retweet_text"),
+                    "retweet_description": post.get("retweet_description"),
                     "reply_count": post.get("reply_count", 0),
                     "like_count": post.get("like_count", 0),
                     "retweet_count": post.get("retweet_count", 0),

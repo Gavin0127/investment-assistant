@@ -485,6 +485,7 @@ class XueqiuScraper:
             rt = s.get("retweeted_status")
             if rt and isinstance(rt, dict):
                 post["retweet_text"] = rt.get("text") or None
+                post["retweet_description"] = rt.get("description") or None
             posts.append(post)
         return posts
 

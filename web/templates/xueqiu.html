@@ -13,18 +13,24 @@
   .filter-btn.active { background: #1e40af; color: #fff; }
   .filter-btn:not(.active) { background: #f3f4f6; color: #6b7280; }
   .filter-btn:not(.active):hover { background: #e5e7eb; color: #374151; }
+  .date-chip { transition: all 0.15s; cursor: pointer; }
+  .date-chip:hover { background: #dbeafe; color: #1e40af; }
+  .date-chip.active { background: #1e40af; color: #fff; }
   .post-content img { max-width: 100%; height: auto; border-radius: 8px; margin: 8px 0; }
   .post-content a { color: #2563eb; text-decoration: underline; }
   .post-content blockquote { border-left: 3px solid #d1d5db; padding-left: 12px; margin: 12px 0; color: #6b7280; }
+  .post-content p { margin: 0.5em 0; }
   .line-clamp-2 { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  .line-clamp-3 { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+  .page-btn { min-width: 32px; height: 32px; display: inline-flex; align-items: center; justify-content: center; }
+  .page-btn:disabled { opacity: 0.4; cursor: not-allowed; }
 </style>
 
 <div x-data="xueqiuApp()" x-init="init()">
   <!-- 顶部 -->
-  <div class="flex justify-between items-center mb-5">
+  <div class="flex justify-between items-center mb-4">
     <div class="flex items-center gap-3">
       <h1 class="text-2xl font-bold text-gray-900">雪球跟踪</h1>
-      <!-- 用户选择器 -->
       <div class="flex items-center gap-1.5">
         <select x-model="selectedUserId" @change="resetAndLoad()"
                 class="px-3 py-1.5 border border-gray-200 rounded-lg text-sm focus:outline-none focus:border-blue-400">
@@ -38,7 +44,6 @@
       </div>
     </div>
     <div class="flex items-center gap-3">
-      <!-- 搜索框 -->
       <div class="relative">
         <svg class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
@@ -46,14 +51,12 @@
         <input type="text" x-model="query" @input="onSearch()" placeholder="搜索帖子..."
                class="pl-9 pr-3 py-2 border border-gray-200 rounded-lg text-sm w-56 focus:outline-none focus:border-blue-400 focus:ring-1 focus:ring-blue-100">
       </div>
-      <!-- 同步按钮 -->
       <div class="relative">
         <button @click="showSyncPanel = !showSyncPanel" :disabled="syncing"
                 class="bg-gray-800 hover:bg-gray-900 text-white px-4 py-2 rounded-lg text-sm disabled:opacity-50 transition-colors whitespace-nowrap">
           <span x-show="!syncing" x-text="!syncCursor ? '开始同步 ▾' : syncCursor.history_done ? '更新数据 ▾' : '继续同步 ▾'"></span>
           <span x-show="syncing" x-text="syncProgress || '同步中...'"></span>
         </button>
-        <!-- 同步设置面板 -->
         <div x-show="showSyncPanel && !syncing" @click.away="showSyncPanel = false"
              class="absolute right-0 top-full mt-1 bg-white border border-gray-200 rounded-lg shadow-lg p-3 z-10 w-48">
           <label class="block text-xs text-gray-500 mb-1">爬取页数</label>
@@ -114,51 +117,76 @@
                     x-text="f.label"></button>
           </template>
         </div>
-        <!-- 时间范围 -->
-        <div class="flex gap-2">
-          <input type="date" x-model="startDate" @change="resetAndLoad()"
-                 class="flex-1 px-2 py-1 border border-gray-200 rounded-md text-xs text-gray-600 focus:outline-none focus:border-blue-400">
-          <input type="date" x-model="endDate" @change="resetAndLoad()"
-                 class="flex-1 px-2 py-1 border border-gray-200 rounded-md text-xs text-gray-600 focus:outline-none focus:border-blue-400">
+        <!-- 年份快捷 -->
+        <div class="flex gap-1 flex-wrap">
+          <template x-for="y in availableYears" :key="y">
+            <button @click="setYear(y)"
+                    :class="activeYear === y ? 'active' : ''"
+                    class="date-chip px-2 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-500"
+                    x-text="y"></button>
+          </template>
+          <button x-show="activeYear" @click="clearDateFilter()"
+                  class="date-chip px-2 py-0.5 rounded text-xs font-medium bg-red-50 text-red-400 hover:bg-red-100">清除</button>
+        </div>
+        <!-- 月份快捷 -->
+        <div x-show="activeYear" class="flex gap-1 flex-wrap">
+          <template x-for="m in 12" :key="m">
+            <button @click="setMonth(m)"
+                    :class="activeMonth === m ? 'active' : ''"
+                    class="date-chip px-1.5 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-500"
+                    x-text="m + '月'"></button>
+          </template>
         </div>
       </div>
 
       <!-- 帖子列表 -->
       <div class="flex-1 overflow-y-auto">
-        <!-- 加载中 -->
         <div x-show="loading && posts.length === 0" class="text-center py-16 text-gray-400 text-sm">加载中...</div>
-
-        <!-- 空状态 -->
         <div x-show="!loading && posts.length === 0" class="text-center py-16 px-4">
           <p class="text-gray-400 text-sm">暂无数据</p>
           <p class="text-gray-300 text-xs mt-1">点击「同步数据」开始</p>
         </div>
 
-        <!-- 列表 -->
         <template x-for="p in posts" :key="p.id">
           <div @click="selectPost(p.id)"
                :class="selectedId === p.id ? 'active' : ''"
-               class="post-card px-3 py-2.5 border-b border-gray-100 cursor-pointer">
-            <div class="flex items-center gap-2 mb-1">
+               class="post-card px-3 py-3 border-b border-gray-100 cursor-pointer">
+            <div class="flex items-center gap-2 mb-1.5">
               <span class="text-xs text-gray-400 font-mono" x-text="formatDate(p.created_at)"></span>
               <span class="text-xs px-1.5 py-0.5 rounded font-medium"
                     :class="typeLabel(p) === '长文' ? 'tag-column' : typeLabel(p) === '转发' ? 'tag-retweet' : 'tag-original'"
                     x-text="typeLabel(p)"></span>
             </div>
             <template x-if="p.is_column && p.title">
-              <div class="text-sm font-medium text-gray-800 line-clamp-2" x-text="p.title"></div>
+              <div class="text-sm font-medium text-gray-800 line-clamp-2 mb-1" x-text="p.title"></div>
             </template>
-            <div class="text-xs text-gray-500 line-clamp-2 mt-0.5" x-text="stripHtml(p.description || p.text || '')"></div>
+            <div class="text-xs text-gray-600 line-clamp-3 leading-relaxed"
+                 x-text="stripHtml(p.description || p.text || '')"></div>
+            <template x-if="p.retweet_status_id && p.retweet_description">
+              <div class="mt-1.5 pl-2 border-l-2 border-gray-200 text-xs text-gray-400 line-clamp-2 leading-relaxed"
+                   x-text="'转发: ' + stripHtml(p.retweet_description)"></div>
+            </template>
           </div>
         </template>
+      </div>
 
-        <!-- 加载更多 -->
-        <div x-show="hasMore && posts.length > 0" class="p-3 text-center">
-          <button @click="loadMore()" :disabled="loading"
-                  class="text-sm text-blue-600 hover:text-blue-800 disabled:text-gray-300">
-            <span x-show="!loading">加载更多</span>
-            <span x-show="loading">加载中...</span>
-          </button>
+      <!-- 分页 -->
+      <div x-show="totalPages > 1" class="px-3 py-2 border-t border-gray-100 flex-shrink-0 flex items-center justify-between">
+        <span class="text-xs text-gray-400" x-text="'共 ' + total + ' 条'"></span>
+        <div class="flex items-center gap-1">
+          <button @click="goPage(page - 1)" :disabled="page <= 1"
+                  class="page-btn rounded border border-gray-200 text-xs text-gray-500 hover:bg-gray-50">‹</button>
+          <template x-for="(item, idx) in pageItems" :key="idx">
+            <div>
+              <span x-show="item.type === 'ellipsis'" class="text-xs text-gray-400 px-1">…</span>
+              <button x-show="item.type === 'page'"
+                      @click="goPage(item.num)" :disabled="item.num === page"
+                      :class="item.num === page ? 'bg-blue-600 text-white border-blue-600' : 'border-gray-200 text-gray-600 hover:bg-gray-50'"
+                      class="page-btn rounded border text-xs" x-text="item.num"></button>
+            </div>
+          </template>
+          <button @click="goPage(page + 1)" :disabled="page >= totalPages"
+                  class="page-btn rounded border border-gray-200 text-xs text-gray-500 hover:bg-gray-50">›</button>
         </div>
       </div>
 
@@ -175,41 +203,39 @@
 
     <!-- 右侧详情 -->
     <div class="w-[65%] overflow-y-auto min-w-0 reading-area">
-
-      <!-- 空态 -->
       <div x-show="!selectedPost" class="flex items-center justify-center h-full text-gray-400 text-sm">
         选择一篇帖子开始阅读
       </div>
 
-      <!-- 帖子详情 -->
-      <div x-show="selectedPost" class="p-6">
+      <div x-show="selectedPost" class="p-6 max-w-3xl">
         <!-- 标题 -->
         <template x-if="selectedPost?.title">
-          <h2 class="text-xl font-bold text-gray-900 mb-3" x-text="selectedPost.title"></h2>
+          <h2 class="text-xl font-bold text-gray-900 mb-3 leading-snug" x-text="selectedPost.title"></h2>
         </template>
 
         <!-- 元信息 -->
-        <div class="flex items-center gap-4 text-xs text-gray-400 mb-4 pb-4 border-b border-gray-100">
+        <div class="flex items-center gap-4 text-xs text-gray-400 mb-5 pb-4 border-b border-gray-100">
           <span x-text="selectedPost?.created_at ? new Date(selectedPost.created_at).toLocaleString('zh-CN') : ''"></span>
           <span x-show="selectedPost?.like_count > 0" x-text="'👍 ' + (selectedPost?.like_count || 0)"></span>
           <span x-show="selectedPost?.reply_count > 0" x-text="'💬 ' + (selectedPost?.reply_count || 0)"></span>
           <span x-show="selectedPost?.retweet_count > 0" x-text="'🔁 ' + (selectedPost?.retweet_count || 0)"></span>
+          <span x-show="selectedPost?.view_count > 0" x-text="'👁 ' + (selectedPost?.view_count || 0)"></span>
         </div>
 
         <!-- 转发原文 -->
         <template x-if="selectedPost?.retweet_text">
-          <div class="mb-4 bg-gray-50 border border-gray-200 rounded-lg p-4">
-            <div class="text-xs text-gray-400 mb-2">转发内容</div>
-            <div class="text-sm text-gray-600 post-content" x-html="processHtml(selectedPost.retweet_text)"></div>
+          <div class="mb-5 bg-gray-50 border-l-4 border-gray-300 rounded-r-lg p-4">
+            <div class="text-xs text-gray-400 mb-2 font-medium">转发内容</div>
+            <div class="text-sm text-gray-600 leading-relaxed post-content" x-html="processHtml(selectedPost.retweet_text)"></div>
           </div>
         </template>
 
         <!-- 正文 -->
-        <div class="text-sm text-gray-800 leading-relaxed post-content" x-html="processHtml(selectedPost?.text || '')"></div>
+        <div class="text-[15px] text-gray-800 leading-[1.8] post-content" x-html="processHtml(selectedPost?.text || '')"></div>
 
         <!-- 图片 -->
         <template x-if="selectedPost?.images && selectedPost.images.length > 0">
-          <div class="mt-4 grid grid-cols-2 gap-2">
+          <div class="mt-5 grid grid-cols-2 gap-3">
             <template x-for="img in selectedPost.images" :key="img">
               <img :src="'/api/xueqiu/images/' + selectedPost.id + '/' + img"
                    :onerror="'this.style.display=\'none\''"
@@ -234,8 +260,8 @@ function xueqiuApp() {
     startDate: '',
     endDate: '',
     page: 1,
+    perPage: 30,
     total: 0,
-    hasMore: true,
     loading: false,
     syncing: false,
     syncProgress: '',
@@ -249,6 +275,71 @@ function xueqiuApp() {
     maxPages: 5,
     showSyncPanel: false,
     syncCursor: null,
+    activeYear: null,
+    activeMonth: null,
+
+    get availableYears() {
+      const now = new Date().getFullYear();
+      const years = [];
+      for (let y = now; y >= now - 4; y--) years.push(y);
+      return years;
+    },
+
+    get totalPages() {
+      return Math.ceil(this.total / this.perPage) || 1;
+    },
+
+    get pageItems() {
+      const tp = this.totalPages;
+      const p = this.page;
+      const items = [];
+      if (tp <= 7) {
+        for (let i = 1; i <= tp; i++) items.push({type: 'page', num: i});
+        return items;
+      }
+      items.push({type: 'page', num: 1});
+      if (p > 3) items.push({type: 'ellipsis'});
+      for (let i = Math.max(2, p - 1); i <= Math.min(tp - 1, p + 1); i++) {
+        items.push({type: 'page', num: i});
+      }
+      if (p < tp - 2) items.push({type: 'ellipsis'});
+      items.push({type: 'page', num: tp});
+      return items;
+    },
+
+    setYear(y) {
+      if (this.activeYear === y) { this.clearDateFilter(); return; }
+      this.activeYear = y;
+      this.activeMonth = null;
+      this.startDate = `${y}-01-01`;
+      this.endDate = `${y}-12-31`;
+      this.resetAndLoad();
+    },
+
+    setMonth(m) {
+      if (this.activeMonth === m) { this.activeMonth = null; this.setYear(this.activeYear); return; }
+      this.activeMonth = m;
+      const y = this.activeYear;
+      const mm = String(m).padStart(2, '0');
+      this.startDate = `${y}-${mm}-01`;
+      const lastDay = new Date(y, m, 0).getDate();
+      this.endDate = `${y}-${mm}-${String(lastDay).padStart(2, '0')}`;
+      this.resetAndLoad();
+    },
+
+    clearDateFilter() {
+      this.activeYear = null;
+      this.activeMonth = null;
+      this.startDate = '';
+      this.endDate = '';
+      this.resetAndLoad();
+    },
+
+    goPage(pg) {
+      if (pg < 1 || pg > this.totalPages || pg === this.page) return;
+      this.page = pg;
+      this.loadPosts(false);
+    },
 
     async loadUsers() {
       try {
@@ -285,13 +376,11 @@ function xueqiuApp() {
       await this.loadUsers();
       await this.loadPosts(false);
       this.fetchSyncStatus();
-      // 从 URL hash 恢复选中状态
       const hash = window.location.hash;
       if (hash && hash.startsWith('#post-')) {
         const id = parseInt(hash.slice(6));
         if (id) this.selectPost(id);
       }
-      // I6: 事件委托处理图片加载失败，避免 onerror 属性 XSS
       document.querySelector('.reading-area')?.addEventListener('error', (e) => {
         if (e.target.tagName === 'IMG' && e.target.dataset.fallback) {
           e.target.src = e.target.dataset.fallback;
@@ -304,7 +393,7 @@ function xueqiuApp() {
       this.loading = true;
       const params = new URLSearchParams({
         page: this.page,
-        per_page: 30,
+        per_page: this.perPage,
         type: this.filter,
       });
       if (this.selectedUserId) params.set('user_id', parseInt(this.selectedUserId));
@@ -315,13 +404,8 @@ function xueqiuApp() {
       try {
         const resp = await fetch('/api/xueqiu/posts?' + params.toString());
         const data = await resp.json();
-        if (append) {
-          this.posts = [...this.posts, ...data.posts];
-        } else {
-          this.posts = data.posts || [];
-        }
+        this.posts = data.posts || [];
         this.total = data.total || 0;
-        this.hasMore = this.posts.length < this.total;
       } catch (e) {
         console.error('Failed to load posts:', e);
       }
@@ -341,9 +425,7 @@ function xueqiuApp() {
 
     onSearch() {
       clearTimeout(this.debounceTimer);
-      this.debounceTimer = setTimeout(() => {
-        this.resetAndLoad();
-      }, 300);
+      this.debounceTimer = setTimeout(() => { this.resetAndLoad(); }, 300);
     },
 
     setFilter(f) {
@@ -353,14 +435,8 @@ function xueqiuApp() {
 
     resetAndLoad() {
       this.page = 1;
-      this.hasMore = true;
       this.loadPosts(false);
       this.fetchSyncStatus();
-    },
-
-    loadMore() {
-      this.page++;
-      this.loadPosts(true);
     },
 
     async startSync(force = false) {
@@ -450,7 +526,6 @@ function xueqiuApp() {
 
     processHtml(html) {
       if (!html) return '';
-      // C1: DOMPurify 消毒
       let cleaned = DOMPurify.sanitize(html, {
         ALLOWED_TAGS: ['p','br','div','span','img','a','b','strong','i','em','u','h1','h2','h3','h4','h5','h6','ul','ol','li','table','tr','td','th','thead','tbody','blockquote','pre','code','hr'],
         ALLOWED_ATTR: ['src','href','class','style','alt','title','width','height']
@@ -458,7 +533,6 @@ function xueqiuApp() {
       const postId = this.selectedPost?.id;
       if (!postId) return cleaned;
       const imageMap = this.selectedPost?.image_map || {};
-      // 替换 img src：用 image_map 查找本地文件名，找不到则 fallback 到原始 URL
       return cleaned.replace(/<img([^>]*)\ssrc=["']([^"']+)["']/g, (match, attrs, src) => {
         const origFilename = src.split('/').pop().split('?')[0];
         const localFilename = imageMap[origFilename];
@@ -466,7 +540,6 @@ function xueqiuApp() {
           const localSrc = '/api/xueqiu/images/' + postId + '/' + localFilename;
           return '<img' + attrs + ' src="' + localSrc + '" data-fallback="' + encodeURI(src) + '"';
         }
-        // 没有本地映射，保留原始 URL
         return match;
       });
     },
@@ -483,10 +556,9 @@ function xueqiuApp() {
       return '原创';
     },
 
-    // M4: 用正则替换代替 innerHTML，避免潜在 XSS
     stripHtml(html) {
       if (!html) return '';
-      return html.replace(/<[^>]*>/g, '').substring(0, 200);
+      return html.replace(/<[^>]*>/g, '').substring(0, 300);
     },
   };
 }
