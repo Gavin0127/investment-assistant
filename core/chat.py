@@ -118,6 +118,24 @@ _SYSTEM_PROMPT = """你是一位专业的投资研究分析师助手。你可以
 """
 
 
+# Reasoning effort 后缀映射：模型名中包含 -<effort> 后缀时，
+# 拆分为真实模型名 + reasoning_effort 参数
+_REASONING_EFFORTS = {"none", "low", "medium", "high", "xhigh"}
+
+
+def _parse_model_effort(model: str) -> tuple[str, str | None]:
+    """从模型名中解析 reasoning effort 后缀。
+
+    例如 'gpt-5.4-xhigh' → ('gpt-5.4', 'xhigh')
+         'gpt-5.4'       → ('gpt-5.4', None)
+    """
+    for effort in _REASONING_EFFORTS:
+        suffix = f"-{effort}"
+        if model.endswith(suffix):
+            return model[: -len(suffix)], effort
+    return model, None
+
+
 class ChatEngine:
     """AI 聊天引擎，支持 SSE 流式输出。"""
 
@@ -131,17 +149,21 @@ class ChatEngine:
         """生成器，yield SSE 事件 dict。model 可覆盖默认模型。"""
         self.chat_db.add_message(session_id, "user", user_message)
         messages = self._build_messages(session_id, user_message)
-        use_model = model or self.llm.model
+        raw_model = model or self.llm.model
+        use_model, effort = _parse_model_effort(raw_model)
 
         thinking_buf = []
         content_buf = []
         try:
-            stream = self.llm.client.chat.completions.create(
+            create_kwargs = dict(
                 model=use_model,
                 messages=messages,
                 stream=True,
                 timeout=300,
             )
+            if effort:
+                create_kwargs["reasoning_effort"] = effort
+            stream = self.llm.client.chat.completions.create(**create_kwargs)
             for chunk in stream:
                 if not chunk.choices:
                     continue

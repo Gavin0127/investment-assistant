@@ -28,7 +28,7 @@
       <div class="flex items-center gap-1.5">
         <select x-model="selectedUserId" @change="resetAndLoad()"
                 class="px-3 py-1.5 border border-gray-200 rounded-lg text-sm focus:outline-none focus:border-blue-400">
-          <option :value="null">全部用户</option>
+          <option value="">全部用户</option>
           <template x-for="u in users" :key="u.user_id">
             <option :value="u.user_id" x-text="u.nickname + ' (' + u.user_id + ')'"></option>
           </template>
@@ -237,7 +237,7 @@ function xueqiuApp() {
     lastSyncTime: '',
     debounceTimer: null,
     users: [],
-    selectedUserId: null,
+    selectedUserId: '',
     showAddUser: false,
     newUserId: '',
     newNickname: '',
@@ -357,6 +357,10 @@ function xueqiuApp() {
     },
 
     async startSync(force = false) {
+      if (!this.selectedUserId) {
+        alert('请先选择要同步的用户');
+        return;
+      }
       this.syncing = true;
       this.syncProgress = '同步中...';
       try {
@@ -409,7 +413,8 @@ function xueqiuApp() {
             } else {
               this.syncProgress = '';
               if (data.last_sync_time) {
-                this.lastSyncTime = data.last_sync_time;
+                const d = new Date(parseInt(data.last_sync_time) * 1000);
+                this.lastSyncTime = d.toLocaleString('zh-CN');
               }
               this.resetAndLoad();
             }
@@ -427,7 +432,8 @@ function xueqiuApp() {
         const resp = await fetch('/api/xueqiu/sync/status');
         const data = await resp.json();
         if (data.last_sync_time) {
-          this.lastSyncTime = data.last_sync_time;
+          const d = new Date(parseInt(data.last_sync_time) * 1000);
+          this.lastSyncTime = d.toLocaleString('zh-CN');
         }
       } catch (e) { /* ignore */ }
     },

@@ -1031,7 +1031,9 @@ def api_xueqiu_sync():
             scraper.sync_status = "idle"
         else:
             return jsonify({"error": "同步正在进行中"}), 409
-    user_id = data.get("user_id", 1936609590)
+    user_id = data.get("user_id")
+    if not user_id:
+        return jsonify({"error": "请选择要同步的用户"}), 400
     max_pages = min(data.get("max_pages", 5), 200)
 
     def run_sync():
