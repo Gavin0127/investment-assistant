@@ -68,6 +68,14 @@ class XueqiuDB:
                     updated_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now') * 1000)
                 );
 
+                CREATE TABLE IF NOT EXISTS xueqiu_users (
+                    user_id INTEGER PRIMARY KEY,
+                    nickname TEXT NOT NULL,
+                    avatar_url TEXT,
+                    is_active INTEGER NOT NULL DEFAULT 1,
+                    created_at INTEGER NOT NULL DEFAULT (strftime('%s','now') * 1000)
+                );
+
                 CREATE VIRTUAL TABLE IF NOT EXISTS posts_fts USING fts5(
                     title, text, description,
                     content='posts',
@@ -178,6 +186,7 @@ class XueqiuDB:
         query: Optional[str] = None,
         start_date: Optional[str] = None,
         end_date: Optional[str] = None,
+        user_id: Optional[int] = None,
     ) -> tuple[list[dict], int]:
         """List posts with filtering, FTS search, and pagination.
 
@@ -221,6 +230,10 @@ class XueqiuDB:
                 conditions.append("created_at <= ?")
                 params.append(self._date_to_ms(end_date, end_of_day=True))
 
+            if user_id is not None:
+                conditions.append("user_id = ?")
+                params.append(user_id)
+
             where = (" WHERE " + " AND ".join(conditions)) if conditions else ""
 
             # Count
@@ -253,6 +266,34 @@ class XueqiuDB:
                 (key, value),
             )
             conn.commit()
+
+    def add_user(self, user_id: int, nickname: str) -> None:
+        with self._get_conn() as conn:
+            conn.execute(
+                "INSERT INTO xueqiu_users (user_id, nickname) VALUES (?, ?) "
+                "ON CONFLICT(user_id) DO UPDATE SET nickname=excluded.nickname",
+                (user_id, nickname),
+            )
+            conn.commit()
+
+    def remove_user(self, user_id: int) -> None:
+        with self._get_conn() as conn:
+            conn.execute("DELETE FROM xueqiu_users WHERE user_id = ?", (user_id,))
+            conn.commit()
+
+    def list_users(self) -> list[dict]:
+        with self._get_conn() as conn:
+            rows = conn.execute(
+                "SELECT * FROM xueqiu_users WHERE is_active = 1 ORDER BY created_at"
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    def get_user(self, user_id: int) -> Optional[dict]:
+        with self._get_conn() as conn:
+            row = conn.execute(
+                "SELECT * FROM xueqiu_users WHERE user_id = ?", (user_id,)
+            ).fetchone()
+            return dict(row) if row else None
 
     def get_latest_post_id(self) -> Optional[int]:
         """Get the id of the most recent post by created_at."""
