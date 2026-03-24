@@ -16,6 +16,7 @@ dependencies = [
     "akshare>=1.10.0",
     "scrapling[fetchers]>=0.3.0",
     "httpx[socks]>=0.28.1",
+    "markdownify>=0.13.1",
 ]
 
 [dependency-groups]
