@@ -34,10 +34,12 @@ class BijiSyncService:
         result = {"created": 0, "updated": 0, "skipped": 0, "failed": 0}
         seen_note_ids: set[str] = set()
         page = 1
+        complete_remote_scan = False
 
         while True:
             summaries = self.client.list_notes(page=page, page_size=self.page_size)
             if not summaries:
+                complete_remote_scan = True
                 break
 
             page_note_ids = [str(item.get("note_id") or "") for item in summaries if item.get("note_id")]
@@ -100,7 +102,8 @@ class BijiSyncService:
 
             page += 1
 
-        self._mark_missing_notes(seen_note_ids)
+        if complete_remote_scan:
+            self._mark_missing_notes(seen_note_ids)
 
         return result
 

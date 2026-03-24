@@ -56,6 +56,11 @@ class FakeClient:
         Path(dest_path).write_bytes(b"image-bytes")
 
 
+class RepeatingPageClient(FakeClient):
+    def list_notes(self, page: int, page_size: int) -> list[dict]:
+        return super().list_notes(page=1, page_size=page_size)
+
+
 def test_first_sync_creates_db_row_and_markdown(tmp_path):
     from core.biji_sync import BijiSyncService
 
@@ -238,3 +243,77 @@ def test_empty_raw_content_still_exports_stable_markdown_file(tmp_path):
     assert markdown_path.exists()
     assert content.startswith("---\n")
     assert 'title: "第一篇"' in content
+
+
+def test_incomplete_scan_does_not_mark_existing_notes_missing(tmp_path):
+    from core.biji_sync import BijiSyncService
+
+    db = BijiDB(str(tmp_path / "biji.db"))
+    db.upsert_note(
+        {
+            "note_id": "n2",
+            "title": "旧笔记",
+            "summary": "旧摘要",
+            "raw_content": "old",
+            "markdown_content": "old",
+            "source_url": "https://www.biji.com/note/n2",
+            "created_at": "2026-03-23 10:00:00",
+            "updated_at": "2026-03-23 10:00:00",
+            "content_hash": "old-hash",
+            "missing_from_remote": 0,
+        }
+    )
+    client = RepeatingPageClient()
+    service = BijiSyncService(
+        client=client,
+        db=db,
+        markdown_root=str(tmp_path / "biji_markdown"),
+        raw_root=str(tmp_path / "biji_raw"),
+        page_size=10,
+    )
+
+    service.sync_once()
+
+    assert db.get_note("n2")["missing_from_remote"] == 0
+
+
+def test_missing_note_reappearing_with_same_updated_at_is_refetched_and_unmarked(tmp_path):
+    from core.biji_sync import BijiSyncService
+
+    db = BijiDB(str(tmp_path / "biji.db"))
+    db.upsert_note(
+        {
+            "note_id": "n1",
+            "title": "旧标题",
+            "summary": "旧摘要",
+            "raw_content": "old",
+            "markdown_content": "old",
+            "source_url": "https://www.biji.com/note/n1",
+            "created_at": "2026-03-24 10:00:00",
+            "updated_at": "2026-03-24 10:00:00",
+            "content_hash": "old-hash",
+            "missing_from_remote": 1,
+        }
+    )
+    client = FakeClient(
+        detail_overrides={
+            "raw_content": "<p>new body</p>",
+            "summary": "新摘要",
+            "updated_at": "2026-03-24 10:00:00",
+        }
+    )
+    service = BijiSyncService(
+        client=client,
+        db=db,
+        markdown_root=str(tmp_path / "biji_markdown"),
+        raw_root=str(tmp_path / "biji_raw"),
+        page_size=10,
+    )
+
+    result = service.sync_once()
+    note = db.get_note("n1")
+
+    assert result["updated"] == 1
+    assert client.detail_calls == 1
+    assert note["missing_from_remote"] == 0
+    assert note["summary"] == "新摘要"
