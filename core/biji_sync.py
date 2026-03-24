@@ -52,6 +52,8 @@ class BijiSyncService:
 
                 existing = self.db.get_note(note_id)
                 if not self._should_refresh_note(summary, existing):
+                    if existing and existing.get("missing_from_remote"):
+                        self.db.upsert_note({**existing, "missing_from_remote": 0})
                     result["skipped"] += 1
                     continue
 
@@ -65,6 +67,7 @@ class BijiSyncService:
                     export_path = self._export_note_markdown(note_id, detail, markdown)
                     content_hash = hashlib.sha256(markdown.encode("utf-8")).hexdigest()
                     now_ms = int(datetime.now().timestamp() * 1000)
+                    self._write_raw_snapshot(note_id, detail)
 
                     self.db.upsert_note(
                         {
@@ -90,10 +93,6 @@ class BijiSyncService:
                     else:
                         result["updated"] += 1
 
-                    self.raw_root.joinpath(f"{note_id}.json").write_text(
-                        json.dumps(detail, ensure_ascii=False, indent=2),
-                        encoding="utf-8",
-                    )
                     if not export_path.exists():
                         raise RuntimeError("Markdown export failed")
                 except Exception:
@@ -101,11 +100,15 @@ class BijiSyncService:
 
             page += 1
 
+        self._mark_missing_notes(seen_note_ids)
+
         return result
 
     @staticmethod
     def _should_refresh_note(summary: dict, existing: dict | None) -> bool:
         if existing is None:
+            return True
+        if existing.get("missing_from_remote"):
             return True
 
         incoming_updated_at = summary.get("updated_at")
@@ -148,6 +151,14 @@ class BijiSyncService:
             encoding="utf-8",
         )
         return output_path
+
+    def _write_raw_snapshot(self, note_id: str, detail: dict) -> Path:
+        snapshot_path = self.raw_root / f"{note_id}.json"
+        snapshot_path.write_text(
+            json.dumps(detail, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        return snapshot_path
 
     def _download_assets(self, note_id: str, assets: list[dict]) -> tuple[list[dict], dict[str, str]]:
         note_dir = self.markdown_root / note_id
@@ -202,6 +213,13 @@ class BijiSyncService:
         for remote_url, local_path in replacements.items():
             updated = updated.replace(remote_url, local_path)
         return updated
+
+    def _mark_missing_notes(self, seen_note_ids: set[str]) -> None:
+        for note in self.db.list_notes():
+            note_id = str(note.get("note_id") or "")
+            if not note_id or note_id in seen_note_ids:
+                continue
+            self.db.upsert_note({**note, "missing_from_remote": 1})
 
     @staticmethod
     def _guess_extension(
