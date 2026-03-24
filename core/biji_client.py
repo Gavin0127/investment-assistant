@@ -42,15 +42,25 @@ class BijiClient:
 
     def _request(self, path: str, *, params: Optional[dict[str, Any]] = None):
         url = urljoin(f"{self.api_base}/", path.lstrip("/"))
+        return self._request_url(url, params=params)
+
+    def _request_url(self, url: str, *, params: Optional[dict[str, Any]] = None):
         last_error: Optional[Exception] = None
 
         for attempt in range(3):
-            response = self._session.get(
-                url,
-                params=params,
-                headers=self._build_headers(),
-                timeout=self.timeout,
-            )
+            try:
+                response = self._session.get(
+                    url,
+                    params=params,
+                    headers=self._build_headers(),
+                    timeout=self.timeout,
+                )
+            except (requests.Timeout, requests.ConnectionError) as exc:
+                last_error = BijiRequestError(f"Biji API temporary failure: {exc}")
+                if attempt < 2:
+                    time.sleep(0.5 * (attempt + 1))
+                    continue
+                raise last_error
 
             if response.status_code in (401, 403):
                 raise BijiAuthError(f"Biji API authentication failed: {response.status_code}")
@@ -83,15 +93,7 @@ class BijiClient:
         return self.parse_detail_response(response.json())
 
     def download_asset(self, url: str, dest_path: str | Path):
-        response = self._session.get(
-            url,
-            headers=self._build_headers(),
-            timeout=self.timeout,
-        )
-        if response.status_code in (401, 403):
-            raise BijiAuthError(f"Biji asset authentication failed: {response.status_code}")
-        if response.status_code >= 400:
-            raise BijiRequestError(f"Biji asset download failed: {response.status_code}")
+        response = self._request_url(url)
 
         path = Path(dest_path)
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -169,7 +171,7 @@ class BijiClient:
             "source_url": cls._make_source_url(note_id),
             "created_at": item.get("created_at"),
             "updated_at": item.get("updated_at"),
-            "raw_content": item.get("content") or "",
+            "raw_content": item.get("content") or item.get("body_text") or "",
             "assets": cls._normalize_assets(item),
             "status": item.get("status"),
         }

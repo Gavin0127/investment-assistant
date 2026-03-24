@@ -5,6 +5,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+import requests
 
 
 _LIST_FIXTURE = Path("tests/fixtures/biji/list_page_1.json")
@@ -26,6 +27,19 @@ class _FakeResponse:
 
     def raise_for_status(self):
         return None
+
+
+class _DownloadSession:
+    def __init__(self, responses):
+        self.responses = list(responses)
+        self.calls = []
+
+    def get(self, url, **kwargs):
+        self.calls.append((url, kwargs))
+        result = self.responses.pop(0)
+        if isinstance(result, Exception):
+            raise result
+        return result
 
 
 def test_build_headers_includes_bearer():
@@ -77,6 +91,25 @@ def test_parse_detail_fixture_extracts_standardized_detail():
     ]
 
 
+def test_parse_detail_uses_body_text_when_content_missing():
+    from core.biji_client import BijiClient
+
+    detail = BijiClient.parse_detail_response(
+        {
+            "c": {
+                "id": "123",
+                "title": "Only body text",
+                "body_text": "fallback body text",
+                "created_at": "2026-03-24 10:00:00",
+                "updated_at": "2026-03-24 10:05:00",
+                "attachments": [],
+            }
+        }
+    )
+
+    assert detail["raw_content"] == "fallback body text"
+
+
 def test_list_notes_retries_server_errors_and_returns_parsed_notes():
     from core.biji_client import BijiClient
 
@@ -103,6 +136,30 @@ def test_list_notes_retries_server_errors_and_returns_parsed_notes():
     assert called_headers["Authorization"] == "Bearer secret"
 
 
+def test_list_notes_retries_connection_errors_before_success():
+    from core.biji_client import BijiClient
+
+    payload = _load_json(_LIST_FIXTURE)
+    client = BijiClient(
+        api_base="https://notes-api.biji.com",
+        bearer_token="secret",
+        timeout=5,
+    )
+    client._session.get = MagicMock(
+        side_effect=[
+            requests.ConnectionError("boom"),
+            requests.Timeout("slow"),
+            _FakeResponse(status_code=200, payload=payload),
+        ]
+    )
+
+    with patch("core.biji_client.time.sleep"):
+        notes = client.list_notes(page=1, page_size=5)
+
+    assert len(notes) == 3
+    assert client._session.get.call_count == 3
+
+
 def test_get_note_detail_raises_auth_error_on_403():
     from core.biji_client import BijiAuthError, BijiClient
 
@@ -111,6 +168,31 @@ def test_get_note_detail_raises_auth_error_on_403():
 
     with pytest.raises(BijiAuthError):
         client.get_note_detail("1905199764681666160")
+
+
+def test_download_asset_retries_network_errors_and_writes_bytes(tmp_path):
+    from core.biji_client import BijiClient
+
+    session = _DownloadSession(
+        [
+            requests.Timeout("slow"),
+            requests.ConnectionError("boom"),
+            _FakeResponse(content=b"recovered"),
+        ]
+    )
+    client = BijiClient(
+        api_base="https://notes-api.biji.com",
+        bearer_token="secret",
+        session=session,
+    )
+    dest = tmp_path / "audio.mp3"
+
+    with patch("core.biji_client.time.sleep"):
+        client.download_asset("https://assets.example.invalid/biji/audio-sample.mp3", dest)
+
+    assert dest.read_bytes() == b"recovered"
+    assert len(session.calls) == 3
+    assert session.calls[-1][1]["headers"]["Authorization"] == "Bearer secret"
 
 
 def test_download_asset_writes_bytes_to_disk(tmp_path):
