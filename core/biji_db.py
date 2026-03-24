@@ -14,6 +14,20 @@ class BijiDB:
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
         self._init_schema()
 
+    @staticmethod
+    def _to_int_bool(value) -> int:
+        if value is None:
+            return 0
+        if isinstance(value, bool):
+            return int(value)
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            if normalized in {"", "0", "false", "no", "off"}:
+                return 0
+            if normalized in {"1", "true", "yes", "on"}:
+                return 1
+        return int(bool(value))
+
     @contextlib.contextmanager
     def _get_conn(self):
         conn = sqlite3.connect(self.db_path)
@@ -112,7 +126,9 @@ class BijiDB:
                     "created_at": note.get("created_at"),
                     "updated_at": note.get("updated_at"),
                     "content_hash": note.get("content_hash"),
-                    "missing_from_remote": int(bool(note.get("missing_from_remote", 0))),
+                    "missing_from_remote": self._to_int_bool(
+                        note.get("missing_from_remote", 0)
+                    ),
                     "last_exported_at": note.get("last_exported_at"),
                 },
             )
@@ -174,7 +190,7 @@ class BijiDB:
                 """
                 SELECT * FROM note_assets
                 WHERE note_id = ?
-                ORDER BY saved_at ASC, asset_url ASC
+                ORDER BY filename ASC, asset_url ASC
                 """,
                 (note_id,),
             ).fetchall()
