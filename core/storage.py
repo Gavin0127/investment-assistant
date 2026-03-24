@@ -11,6 +11,8 @@ import shutil
 class Storage:
     """本地 JSON 文件存储"""
 
+    _FALSEY_STRINGS = {"0", "false", "no", "off", ""}
+
     def __init__(self, base_dir: Optional[str] = None):
         self.base_dir = Path(base_dir or os.path.expanduser("~/.investment-assistant"))
         self.base_dir.mkdir(parents=True, exist_ok=True)
@@ -36,6 +38,27 @@ class Storage:
         """保存配置"""
         with open(self.config_path, "w", encoding="utf-8") as f:
             json.dump(config, f, ensure_ascii=False, indent=2)
+
+    @classmethod
+    def _parse_bool(cls, value: Any, default: bool) -> bool:
+        """安全解析布尔配置值。"""
+        if value is None:
+            return default
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            return value.strip().lower() not in cls._FALSEY_STRINGS
+        return bool(value)
+
+    @staticmethod
+    def _parse_int(value: Any, default: int) -> int:
+        """安全解析整数配置值。"""
+        try:
+            if value is None:
+                raise TypeError
+            return int(value)
+        except (TypeError, ValueError):
+            return default
 
     def get_llm_provider(self) -> str:
         """获取 LLM provider，环境变量优先，config 兜底，默认 gemini"""
@@ -84,11 +107,11 @@ class Storage:
         """获取 Biji 同步配置"""
         config = self.get_config().get("biji") or {}
         return {
-            "enabled": bool(config.get("enabled", False)),
+            "enabled": self._parse_bool(config.get("enabled"), False),
             "api_base": config.get("api_base", "https://notes-api.biji.com"),
             "bearer_token": config.get("bearer_token"),
-            "page_size": int(config.get("page_size", 50)),
-            "download_images": bool(config.get("download_images", True)),
+            "page_size": self._parse_int(config.get("page_size"), 50),
+            "download_images": self._parse_bool(config.get("download_images"), True),
         }
 
     def get_biji_token(self) -> Optional[str]:
