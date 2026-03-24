@@ -47,12 +47,13 @@ def test_main_wires_dependencies_and_prints_summary(monkeypatch, tmp_path, capsy
             state["db_path"] = db_path
 
     class FakeSyncService:
-        def __init__(self, client, db, markdown_root, raw_root, page_size):
+        def __init__(self, client, db, markdown_root, raw_root, page_size, download_images=True):
             self.client = client
             self.db = db
             self.markdown_root = markdown_root
             self.raw_root = raw_root
             self.page_size = page_size
+            self.download_images = download_images
             state["service"] = self
 
         def sync_once(self):
@@ -73,11 +74,10 @@ def test_main_wires_dependencies_and_prints_summary(monkeypatch, tmp_path, capsy
     assert "failed=0" in captured.out
     assert state["storage_base_dir"] == tmp_path
     assert state["service"].page_size == 20
+    assert state["service"].download_images is False
     assert state["service"].markdown_root == str(tmp_path / "data" / "biji_markdown")
     assert state["service"].raw_root == str(tmp_path / "data" / "biji_raw")
     assert state["db_path"] == str(tmp_path / "data" / "biji_notes.db")
-    with pytest.raises(RuntimeError, match="asset download disabled"):
-        state["client"].download_asset("https://example.invalid/a.png", tmp_path / "a.png")
 
 
 def test_main_uses_config_page_size_when_flag_is_omitted(monkeypatch, tmp_path, capsys):
@@ -106,8 +106,9 @@ def test_main_uses_config_page_size_when_flag_is_omitted(monkeypatch, tmp_path, 
             self.db_path = db_path
 
     class FakeSyncService:
-        def __init__(self, client, db, markdown_root, raw_root, page_size):
+        def __init__(self, client, db, markdown_root, raw_root, page_size, download_images=True):
             captured["page_size"] = page_size
+            captured["download_images"] = download_images
 
         def sync_once(self):
             return {"created": 0, "updated": 0, "skipped": 1, "failed": 0}
@@ -122,6 +123,7 @@ def test_main_uses_config_page_size_when_flag_is_omitted(monkeypatch, tmp_path, 
     captured_output = capsys.readouterr()
     assert exit_code == 0
     assert captured["page_size"] == 33
+    assert captured["download_images"] is True
     assert "skipped=1" in captured_output.out
 
 

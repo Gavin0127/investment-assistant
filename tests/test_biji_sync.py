@@ -6,25 +6,36 @@ from core.biji_db import BijiDB
 
 
 class FakeClient:
-    def __init__(self, detail_overrides=None, download_fail_urls=None):
+    def __init__(self, detail_overrides=None, download_fail_urls=None, page_responses=None):
         self.detail_overrides = detail_overrides or {}
         self.download_fail_urls = set(download_fail_urls or [])
+        self.page_responses = page_responses or {
+            1: {
+                "notes": [
+                    {
+                        "note_id": "n1",
+                        "title": "第一篇",
+                        "summary": "摘要",
+                        "source_url": "https://www.biji.com/note/n1",
+                        "created_at": "2026-03-24 10:00:00",
+                        "updated_at": "2026-03-24 10:00:00",
+                    }
+                ],
+                "meta": {"has_more": False, "total_items": 1},
+            }
+        }
         self.detail_calls = 0
         self.download_calls = 0
 
     def list_notes(self, page: int, page_size: int) -> list[dict]:
-        if page > 1:
-            return []
-        return [
-            {
-                "note_id": "n1",
-                "title": "第一篇",
-                "summary": "摘要",
-                "source_url": "https://www.biji.com/note/n1",
-                "created_at": "2026-03-24 10:00:00",
-                "updated_at": "2026-03-24 10:00:00",
-            }
-        ]
+        notes, _ = self.list_notes_page(page=page, page_size=page_size)
+        return notes
+
+    def list_notes_page(self, page: int, page_size: int) -> tuple[list[dict], dict]:
+        page_data = self.page_responses.get(page)
+        if page_data is None:
+            return [], {"has_more": False, "total_items": 0}
+        return list(page_data["notes"]), dict(page_data.get("meta") or {})
 
     def get_note_detail(self, note_id: str) -> dict:
         self.detail_calls += 1
@@ -57,8 +68,39 @@ class FakeClient:
 
 
 class RepeatingPageClient(FakeClient):
-    def list_notes(self, page: int, page_size: int) -> list[dict]:
-        return super().list_notes(page=1, page_size=page_size)
+    def __init__(self, *args, **kwargs):
+        super().__init__(
+            *args,
+            page_responses={
+                1: {
+                    "notes": [
+                        {
+                            "note_id": "n1",
+                            "title": "第一篇",
+                            "summary": "摘要",
+                            "source_url": "https://www.biji.com/note/n1",
+                            "created_at": "2026-03-24 10:00:00",
+                            "updated_at": "2026-03-24 10:00:00",
+                        }
+                    ],
+                    "meta": {"has_more": True, "total_items": 2},
+                },
+                2: {
+                    "notes": [
+                        {
+                            "note_id": "n1",
+                            "title": "第一篇",
+                            "summary": "摘要",
+                            "source_url": "https://www.biji.com/note/n1",
+                            "created_at": "2026-03-24 10:00:00",
+                            "updated_at": "2026-03-24 10:00:00",
+                        }
+                    ],
+                    "meta": {"has_more": True, "total_items": 2},
+                },
+            },
+            **kwargs,
+        )
 
 
 def test_first_sync_creates_db_row_and_markdown(tmp_path):
@@ -220,6 +262,56 @@ def test_failed_asset_download_keeps_remote_url_in_markdown(tmp_path):
     assert "https://img.example.com/a.png" in markdown
     assert assets[0]["local_path"] is None
     assert assets[0]["download_status"] == "failed"
+
+
+def test_no_images_only_skips_image_downloads(tmp_path):
+    from core.biji_sync import BijiSyncService
+
+    db = BijiDB(str(tmp_path / "biji.db"))
+    client = FakeClient(
+        detail_overrides={
+            "raw_content": (
+                '<p>Hello <img src="https://img.example.com/a.png" /></p>'
+                "\n<audio src=\"https://assets.example.invalid/audio.mp3\"></audio>"
+            ),
+            "assets": [
+                {
+                    "asset_url": "https://img.example.com/a.png",
+                    "asset_type": "image",
+                    "mime_type": "image/png",
+                    "title": "",
+                },
+                {
+                    "asset_url": "https://assets.example.invalid/audio.mp3",
+                    "asset_type": "audio",
+                    "mime_type": "audio/mpeg",
+                    "title": "",
+                },
+            ],
+        }
+    )
+    service = BijiSyncService(
+        client=client,
+        db=db,
+        markdown_root=str(tmp_path / "biji_markdown"),
+        raw_root=str(tmp_path / "biji_raw"),
+        page_size=10,
+        download_images=False,
+    )
+
+    service.sync_once()
+
+    markdown = (tmp_path / "biji_markdown" / "n1" / "index.md").read_text(encoding="utf-8")
+    assets = db.list_assets("n1")
+
+    assert client.download_calls == 1
+    assert "https://img.example.com/a.png" in markdown
+    assert assets[0]["asset_type"] == "image"
+    assert assets[0]["download_status"] == "skipped"
+    assert assets[1]["asset_type"] == "audio"
+    assert assets[1]["download_status"] == "done"
+    assert assets[1]["local_path"] == "assets/002.mp3"
+    assert (tmp_path / "biji_markdown" / "n1" / "assets" / "002.mp3").exists()
 
 
 def test_empty_raw_content_still_exports_stable_markdown_file(tmp_path):

@@ -27,13 +27,6 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _disable_asset_downloads(client: BijiClient) -> None:
-    def _disabled_download(*_args, **_kwargs):
-        raise RuntimeError("asset download disabled")
-
-    client.download_asset = _disabled_download
-
-
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -61,13 +54,12 @@ def main(argv: list[str] | None = None) -> int:
             if args.page_size is not None
             else (biji_config.get("page_size") or 50)
         )
+        download_images = bool(biji_config.get("download_images", True)) and not args.no_images
 
         client = BijiClient(
             api_base=biji_config["api_base"],
             bearer_token=token,
         )
-        if args.no_images or not biji_config.get("download_images", True):
-            _disable_asset_downloads(client)
 
         db = BijiDB(str(db_path))
         service = BijiSyncService(
@@ -76,6 +68,7 @@ def main(argv: list[str] | None = None) -> int:
             markdown_root=str(markdown_root),
             raw_root=str(raw_root),
             page_size=page_size,
+            download_images=download_images,
         )
 
         result = service.sync_once()

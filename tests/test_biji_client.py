@@ -51,6 +51,8 @@ def test_build_headers_includes_bearer():
 
     assert headers["Authorization"] == "Bearer secret"
     assert headers["Accept"] == "application/json"
+    assert headers["Origin"] == "https://www.biji.com"
+    assert headers["Referer"] == "https://www.biji.com/note"
 
 
 def test_parse_list_fixture_extracts_standardized_notes():
@@ -67,6 +69,23 @@ def test_parse_list_fixture_extracts_standardized_notes():
     assert notes[0]["source_url"] == "https://www.biji.com/note/1905199764681666160"
     assert notes[0]["created_at"] == "2026-03-24 19:14:28"
     assert notes[0]["updated_at"] == "2026-03-24 20:34:16"
+
+
+def test_list_notes_page_returns_notes_and_metadata():
+    from core.biji_client import BijiClient
+
+    payload = _load_json(_LIST_FIXTURE)
+    client = BijiClient(
+        api_base="https://notes-api.biji.com",
+        bearer_token="secret",
+        timeout=5,
+    )
+    client._session.get = MagicMock(return_value=_FakeResponse(status_code=200, payload=payload))
+
+    notes, meta = client.list_notes_page(page=1, page_size=5)
+
+    assert len(notes) == 3
+    assert meta == {"has_more": True, "total_items": 551}
 
 
 def test_parse_detail_fixture_extracts_standardized_detail():

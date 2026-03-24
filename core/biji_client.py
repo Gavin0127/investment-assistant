@@ -33,6 +33,8 @@ class BijiClient:
         return {
             "Accept": "application/json",
             "Authorization": f"Bearer {self.bearer_token}",
+            "Origin": "https://www.biji.com",
+            "Referer": "https://www.biji.com/note",
             "User-Agent": (
                 "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
                 "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -81,12 +83,17 @@ class BijiClient:
 
         raise last_error or BijiRequestError("Biji API request failed")
 
-    def list_notes(self, page: int, page_size: int) -> list[dict]:
+    def list_notes_page(self, page: int, page_size: int) -> tuple[list[dict], dict]:
         response = self._request(
             "/voicenotes/web/notes",
             params={"page": page, "page_size": page_size},
         )
-        return self.parse_list_response(response.json())
+        raw = response.json()
+        return self.parse_list_response(raw), self.parse_list_metadata(raw)
+
+    def list_notes(self, page: int, page_size: int) -> list[dict]:
+        notes, _meta = self.list_notes_page(page=page, page_size=page_size)
+        return notes
 
     def get_note_detail(self, note_id: str) -> dict:
         response = self._request(f"/voicenotes/web/notes/{note_id}")
@@ -159,6 +166,14 @@ class BijiClient:
                 }
             )
         return notes
+
+    @staticmethod
+    def parse_list_metadata(raw: dict) -> dict:
+        payload = raw.get("c") or {}
+        return {
+            "has_more": payload.get("has_more"),
+            "total_items": payload.get("total_items"),
+        }
 
     @classmethod
     def parse_detail_response(cls, raw: dict) -> dict:

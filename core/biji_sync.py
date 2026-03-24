@@ -21,12 +21,14 @@ class BijiSyncService:
         markdown_root: str,
         raw_root: str,
         page_size: int = 50,
+        download_images: bool = True,
     ):
         self.client = client
         self.db = db
         self.markdown_root = Path(markdown_root)
         self.raw_root = Path(raw_root)
         self.page_size = page_size
+        self.download_images = download_images
         self.markdown_root.mkdir(parents=True, exist_ok=True)
         self.raw_root.mkdir(parents=True, exist_ok=True)
 
@@ -37,7 +39,7 @@ class BijiSyncService:
         complete_remote_scan = False
 
         while True:
-            summaries = self.client.list_notes(page=page, page_size=self.page_size)
+            summaries, page_meta = self._list_notes_page(page=page)
             if not summaries:
                 complete_remote_scan = True
                 break
@@ -100,12 +102,27 @@ class BijiSyncService:
                 except Exception:
                     result["failed"] += 1
 
+            if page_meta.get("has_more") is False:
+                complete_remote_scan = True
+                break
+
+            total_items = page_meta.get("total_items")
+            if isinstance(total_items, int) and len(seen_note_ids) >= total_items:
+                complete_remote_scan = True
+                break
+
             page += 1
 
         if complete_remote_scan:
             self._mark_missing_notes(seen_note_ids)
 
         return result
+
+    def _list_notes_page(self, page: int) -> tuple[list[dict], dict]:
+        list_notes_page = getattr(self.client, "list_notes_page", None)
+        if callable(list_notes_page):
+            return list_notes_page(page=page, page_size=self.page_size)
+        return self.client.list_notes(page=page, page_size=self.page_size), {}
 
     @staticmethod
     def _should_refresh_note(summary: dict, existing: dict | None) -> bool:
@@ -186,13 +203,21 @@ class BijiSyncService:
             destination = assets_dir / filename
             download_status = "done"
             local_path: str | None = relative_path
+            is_image = (
+                asset.get("asset_type") == "image"
+                or str(asset.get("mime_type") or "").startswith("image/")
+            )
 
-            try:
-                self.client.download_asset(asset_url, destination)
-                replacements[asset_url] = relative_path
-            except Exception:
-                download_status = "failed"
+            if is_image and not self.download_images:
+                download_status = "skipped"
                 local_path = None
+            else:
+                try:
+                    self.client.download_asset(asset_url, destination)
+                    replacements[asset_url] = relative_path
+                except Exception:
+                    download_status = "failed"
+                    local_path = None
 
             asset_records.append(
                 {
