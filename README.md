@@ -641,6 +641,9 @@ Environment┘               ▼
 ├── config.json                    # 系统配置（API Key、认证）
 ├── portfolio_playbook.json        # 总体投资策略
 ├── user_preferences.json          # 用户偏好规则
+├── data/
+│   ├── biji_notes.db              # Biji 笔记结构化数据
+│   └── biji_markdown/             # Biji 笔记离线导出（Markdown + assets）
 ├── stocks/
 │   └── {stock_id}/               # 每只股票独立目录
 │       ├── playbook.json          # 个股投资逻辑
@@ -657,9 +660,22 @@ Environment┘               ▼
 {
   "gemini_api_key": "your_api_key",
   "auth_enabled": false,
-  "auth_password_hash": null
+  "auth_password_hash": null,
+  "biji": {
+    "enabled": true,
+    "api_base": "https://notes-api.biji.com",
+    "bearer_token": "YOUR_BEARER_TOKEN",
+    "page_size": 50,
+    "download_images": true
+  }
 }
 ```
+
+说明：
+
+- `biji.bearer_token` 只保存在本地 `~/.investment-assistant/config.json` 中，不要提交到仓库
+- `biji_notes.db` 用于保存结构化笔记、附件和同步状态
+- `biji_markdown/<note_id>/index.md` 和 `assets/` 用于离线阅读
 
 #### portfolio_playbook.json
 存储总体投资策略，包括主线主题、主攻标的、持仓策略等。
@@ -734,6 +750,34 @@ curl -X POST http://localhost:5000/api/auth/setup \
   -H "Content-Type: application/json" \
   -d '{"password": "your_password", "enable": true}'
 ```
+
+### Biji 笔记同步
+
+如果你希望同步 `https://www.biji.com/note` 下的笔记，请先在本地 `config.json` 中配置 `biji.bearer_token`，然后运行：
+
+首次同步：
+
+```bash
+uv run python scripts/sync_biji.py --page-size 20 -v
+```
+
+后续增量同步：
+
+```bash
+uv run python scripts/sync_biji.py -v
+```
+
+如果只想导出正文、不下载图片：
+
+```bash
+uv run python scripts/sync_biji.py --no-images -v
+```
+
+同步输出位置：
+
+- `~/.investment-assistant/data/biji_notes.db`
+- `~/.investment-assistant/data/biji_markdown/<note_id>/index.md`
+- `~/.investment-assistant/data/biji_markdown/<note_id>/assets/`
 
 ---
 
