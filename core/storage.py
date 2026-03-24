@@ -80,6 +80,22 @@ class Storage:
             config["openai_api_key"] = api_key
         self.save_config(config)
 
+    def get_biji_config(self) -> Dict:
+        """获取 Biji 同步配置"""
+        config = self.get_config().get("biji") or {}
+        return {
+            "enabled": bool(config.get("enabled", False)),
+            "api_base": config.get("api_base", "https://notes-api.biji.com"),
+            "bearer_token": config.get("bearer_token"),
+            "page_size": int(config.get("page_size", 50)),
+            "download_images": bool(config.get("download_images", True)),
+        }
+
+    def get_biji_token(self) -> Optional[str]:
+        """获取去空白后的 Biji Bearer Token"""
+        token = (self.get_biji_config().get("bearer_token") or "").strip()
+        return token or None
+
     # ==================== 总体 Playbook ====================
 
     def get_portfolio_playbook(self) -> Optional[Dict]:
