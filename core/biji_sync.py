@@ -14,6 +14,13 @@ from markdownify import markdownify
 class BijiSyncService:
     """Coordinates list scanning, detail fetching, asset download, and export."""
 
+    _INTERNAL_ASSET_HOST_SUFFIXES = (
+        "biji.com",
+        "umiwi.com",
+        "igetget.com",
+        "luojilab.com",
+    )
+
     def __init__(
         self,
         client,
@@ -36,10 +43,12 @@ class BijiSyncService:
         result = {"created": 0, "updated": 0, "skipped": 0, "failed": 0}
         seen_note_ids: set[str] = set()
         page = 1
+        since_id = "0"
+        use_cursor_scan = callable(getattr(self.client, "list_notes_batch", None))
         complete_remote_scan = False
 
         while True:
-            summaries, page_meta = self._list_notes_page(page=page)
+            summaries, page_meta = self._list_notes_page(page=page, since_id=since_id)
             if not summaries:
                 complete_remote_scan = True
                 break
@@ -111,14 +120,23 @@ class BijiSyncService:
                 complete_remote_scan = True
                 break
 
-            page += 1
+            if use_cursor_scan:
+                last_note_id = page_note_ids[-1] if page_note_ids else ""
+                if not last_note_id or last_note_id == since_id:
+                    break
+                since_id = last_note_id
+            else:
+                page += 1
 
         if complete_remote_scan:
             self._mark_missing_notes(seen_note_ids)
 
         return result
 
-    def _list_notes_page(self, page: int) -> tuple[list[dict], dict]:
+    def _list_notes_page(self, page: int, since_id: str = "0") -> tuple[list[dict], dict]:
+        list_notes_batch = getattr(self.client, "list_notes_batch", None)
+        if callable(list_notes_batch):
+            return list_notes_batch(since_id=since_id, limit=self.page_size, sort="edit_desc")
         list_notes_page = getattr(self.client, "list_notes_page", None)
         if callable(list_notes_page):
             return list_notes_page(page=page, page_size=self.page_size)
@@ -208,7 +226,10 @@ class BijiSyncService:
                 or str(asset.get("mime_type") or "").startswith("image/")
             )
 
-            if is_image and not self.download_images:
+            if self._is_external_asset_url(asset_url):
+                download_status = "external"
+                local_path = None
+            elif is_image and not self.download_images:
                 download_status = "skipped"
                 local_path = None
             else:
@@ -241,6 +262,16 @@ class BijiSyncService:
         for remote_url, local_path in replacements.items():
             updated = updated.replace(remote_url, local_path)
         return updated
+
+    @classmethod
+    def _is_external_asset_url(cls, asset_url: str) -> bool:
+        hostname = (urlparse(asset_url).hostname or "").lower()
+        if not hostname:
+            return False
+        return not any(
+            hostname == suffix or hostname.endswith(f".{suffix}")
+            for suffix in cls._INTERNAL_ASSET_HOST_SUFFIXES
+        )
 
     def _mark_missing_notes(self, seen_note_ids: set[str]) -> None:
         for note in self.db.list_notes():

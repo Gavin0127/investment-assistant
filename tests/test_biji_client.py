@@ -86,6 +86,31 @@ def test_list_notes_page_returns_notes_and_metadata():
 
     assert len(notes) == 3
     assert meta == {"has_more": True, "total_items": 551}
+    called_params = client._session.get.call_args.kwargs["params"]
+    assert called_params == {"limit": 5, "since_id": "0", "sort": "edit_desc"}
+
+
+def test_list_notes_batch_uses_since_id_cursor_protocol():
+    from core.biji_client import BijiClient
+
+    payload = _load_json(_LIST_FIXTURE)
+    client = BijiClient(
+        api_base="https://notes-api.biji.com",
+        bearer_token="secret",
+        timeout=5,
+    )
+    client._session.get = MagicMock(return_value=_FakeResponse(status_code=200, payload=payload))
+
+    notes, meta = client.list_notes_batch(since_id="1905090423404109512", limit=20)
+
+    assert len(notes) == 3
+    assert meta == {"has_more": True, "total_items": 551}
+    called_params = client._session.get.call_args.kwargs["params"]
+    assert called_params == {
+        "limit": 20,
+        "since_id": "1905090423404109512",
+        "sort": "edit_desc",
+    }
 
 
 def test_parse_detail_fixture_extracts_standardized_detail():

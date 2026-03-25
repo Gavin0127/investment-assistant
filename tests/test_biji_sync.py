@@ -46,10 +46,10 @@ class FakeClient:
             "source_url": "https://www.biji.com/note/n1",
             "created_at": "2026-03-24 10:00:00",
             "updated_at": "2026-03-24 10:00:00",
-            "raw_content": "<p>Hello <img src=\"https://img.example.com/a.png\" /></p>",
+            "raw_content": "<p>Hello <img src=\"https://get-notes.umiwi.com/a.png\" /></p>",
             "assets": [
                 {
-                    "asset_url": "https://img.example.com/a.png",
+                    "asset_url": "https://get-notes.umiwi.com/a.png",
                     "asset_type": "image",
                     "mime_type": "image/png",
                     "title": "",
@@ -101,6 +101,19 @@ class RepeatingPageClient(FakeClient):
             },
             **kwargs,
         )
+
+
+class CursorFakeClient(FakeClient):
+    def __init__(self, cursor_responses, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.cursor_responses = list(cursor_responses)
+        self.cursor_calls = []
+
+    def list_notes_batch(self, *, since_id: str, limit: int, sort: str = "edit_desc"):
+        self.cursor_calls.append({"since_id": since_id, "limit": limit, "sort": sort})
+        if not self.cursor_responses:
+            return [], {"has_more": False, "total_items": 0}
+        return self.cursor_responses.pop(0)
 
 
 def test_first_sync_creates_db_row_and_markdown(tmp_path):
@@ -168,7 +181,7 @@ def test_sync_replaces_remote_image_urls_with_local_relative_paths(tmp_path):
     markdown = markdown_path.read_text(encoding="utf-8")
     assets = db.list_assets("n1")
 
-    assert "https://img.example.com/a.png" not in markdown
+    assert "https://get-notes.umiwi.com/a.png" not in markdown
     assert "assets/001.png" in markdown
     assert assets[0]["local_path"] == "assets/001.png"
     assert (tmp_path / "biji_markdown" / "n1" / "assets" / "001.png").exists()
@@ -244,7 +257,7 @@ def test_failed_asset_download_keeps_remote_url_in_markdown(tmp_path):
     from core.biji_sync import BijiSyncService
 
     db = BijiDB(str(tmp_path / "biji.db"))
-    client = FakeClient(download_fail_urls={"https://img.example.com/a.png"})
+    client = FakeClient(download_fail_urls={"https://get-notes.umiwi.com/a.png"})
     service = BijiSyncService(
         client=client,
         db=db,
@@ -259,9 +272,46 @@ def test_failed_asset_download_keeps_remote_url_in_markdown(tmp_path):
     assets = db.list_assets("n1")
 
     assert result["created"] == 1
-    assert "https://img.example.com/a.png" in markdown
+    assert "https://get-notes.umiwi.com/a.png" in markdown
     assert assets[0]["local_path"] is None
     assert assets[0]["download_status"] == "failed"
+
+
+def test_external_asset_is_recorded_without_download(tmp_path):
+    from core.biji_sync import BijiSyncService
+
+    db = BijiDB(str(tmp_path / "biji.db"))
+    client = FakeClient(
+        detail_overrides={
+            "raw_content": '<p>Ref <a href="https://xueqiu.com/123/456">雪球链接</a></p>',
+            "assets": [
+                {
+                    "asset_url": "https://xueqiu.com/123/456",
+                    "asset_type": "attachment",
+                    "mime_type": "text/html",
+                    "title": "雪球链接",
+                }
+            ],
+        }
+    )
+    service = BijiSyncService(
+        client=client,
+        db=db,
+        markdown_root=str(tmp_path / "biji_markdown"),
+        raw_root=str(tmp_path / "biji_raw"),
+        page_size=10,
+    )
+
+    result = service.sync_once()
+    markdown = (tmp_path / "biji_markdown" / "n1" / "index.md").read_text(encoding="utf-8")
+    assets = db.list_assets("n1")
+
+    assert result["created"] == 1
+    assert client.download_calls == 0
+    assert "https://xueqiu.com/123/456" in markdown
+    assert assets[0]["asset_url"] == "https://xueqiu.com/123/456"
+    assert assets[0]["local_path"] is None
+    assert assets[0]["download_status"] == "external"
 
 
 def test_no_images_only_skips_image_downloads(tmp_path):
@@ -271,18 +321,18 @@ def test_no_images_only_skips_image_downloads(tmp_path):
     client = FakeClient(
         detail_overrides={
             "raw_content": (
-                '<p>Hello <img src="https://img.example.com/a.png" /></p>'
-                "\n<audio src=\"https://assets.example.invalid/audio.mp3\"></audio>"
+                '<p>Hello <img src="https://get-notes.umiwi.com/a.png" /></p>'
+                "\n<audio src=\"https://mediacdn.umiwi.com/audio.mp3\"></audio>"
             ),
             "assets": [
                 {
-                    "asset_url": "https://img.example.com/a.png",
+                    "asset_url": "https://get-notes.umiwi.com/a.png",
                     "asset_type": "image",
                     "mime_type": "image/png",
                     "title": "",
                 },
                 {
-                    "asset_url": "https://assets.example.invalid/audio.mp3",
+                    "asset_url": "https://mediacdn.umiwi.com/audio.mp3",
                     "asset_type": "audio",
                     "mime_type": "audio/mpeg",
                     "title": "",
@@ -305,7 +355,7 @@ def test_no_images_only_skips_image_downloads(tmp_path):
     assets = db.list_assets("n1")
 
     assert client.download_calls == 1
-    assert "https://img.example.com/a.png" in markdown
+    assert "https://get-notes.umiwi.com/a.png" in markdown
     assert assets[0]["asset_type"] == "image"
     assert assets[0]["download_status"] == "skipped"
     assert assets[1]["asset_type"] == "audio"
@@ -367,6 +417,67 @@ def test_incomplete_scan_does_not_mark_existing_notes_missing(tmp_path):
     service.sync_once()
 
     assert db.get_note("n2")["missing_from_remote"] == 0
+
+
+def test_sync_uses_since_id_cursor_protocol_when_client_supports_it(tmp_path):
+    from core.biji_sync import BijiSyncService
+
+    db = BijiDB(str(tmp_path / "biji.db"))
+    client = CursorFakeClient(
+        cursor_responses=[
+            (
+                [
+                    {
+                        "note_id": "n1",
+                        "title": "第一篇",
+                        "summary": "摘要",
+                        "source_url": "https://www.biji.com/note/n1",
+                        "created_at": "2026-03-24 10:00:00",
+                        "updated_at": "2026-03-24 10:00:00",
+                    },
+                    {
+                        "note_id": "n2",
+                        "title": "第二篇",
+                        "summary": "摘要",
+                        "source_url": "https://www.biji.com/note/n2",
+                        "created_at": "2026-03-24 09:00:00",
+                        "updated_at": "2026-03-24 09:00:00",
+                    },
+                ],
+                {"has_more": True, "total_items": 553},
+            ),
+            (
+                [
+                    {
+                        "note_id": "n3",
+                        "title": "第三篇",
+                        "summary": "摘要",
+                        "source_url": "https://www.biji.com/note/n3",
+                        "created_at": "2026-03-24 08:00:00",
+                        "updated_at": "2026-03-24 08:00:00",
+                    }
+                ],
+                {"has_more": False, "total_items": 553},
+            ),
+        ],
+        detail_overrides={"assets": []},
+    )
+    service = BijiSyncService(
+        client=client,
+        db=db,
+        markdown_root=str(tmp_path / "biji_markdown"),
+        raw_root=str(tmp_path / "biji_raw"),
+        page_size=50,
+    )
+
+    result = service.sync_once()
+
+    assert result == {"created": 3, "updated": 0, "skipped": 0, "failed": 0}
+    assert client.cursor_calls == [
+        {"since_id": "0", "limit": 50, "sort": "edit_desc"},
+        {"since_id": "n2", "limit": 50, "sort": "edit_desc"},
+    ]
+    assert db.get_note("n3")["note_id"] == "n3"
 
 
 def test_missing_note_reappearing_with_same_updated_at_is_refetched_and_unmarked(tmp_path):

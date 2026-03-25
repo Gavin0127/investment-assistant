@@ -83,13 +83,23 @@ class BijiClient:
 
         raise last_error or BijiRequestError("Biji API request failed")
 
-    def list_notes_page(self, page: int, page_size: int) -> tuple[list[dict], dict]:
-        response = self._request(
-            "/voicenotes/web/notes",
-            params={"page": page, "page_size": page_size},
-        )
+    def list_notes_batch(
+        self,
+        *,
+        since_id: str = "0",
+        limit: int = 50,
+        sort: str = "edit_desc",
+        note_type_list: Optional[str] = None,
+    ) -> tuple[list[dict], dict]:
+        params: dict[str, Any] = {"limit": limit, "since_id": since_id, "sort": sort}
+        if note_type_list:
+            params["note_type_list"] = note_type_list
+        response = self._request("/voicenotes/web/notes", params=params)
         raw = response.json()
         return self.parse_list_response(raw), self.parse_list_metadata(raw)
+
+    def list_notes_page(self, page: int, page_size: int) -> tuple[list[dict], dict]:
+        return self.list_notes_batch(since_id="0", limit=page_size, sort="edit_desc")
 
     def list_notes(self, page: int, page_size: int) -> list[dict]:
         notes, _meta = self.list_notes_page(page=page, page_size=page_size)

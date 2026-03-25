@@ -55,6 +55,14 @@ Thumbs.db
 config.json
 .env
 *.env.local
+auth.json
+*.auth.json
+browser-state.json
+storage-state.json
+playwright/.auth/
+playwright/auth/
+*.cookies.json
+*.session.json
 
 # 上传的文件
 uploads/
