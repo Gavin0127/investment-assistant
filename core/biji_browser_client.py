@@ -80,7 +80,7 @@ class BijiBrowserClient(BijiClient):
             )
             if response.status_code < 400:
                 return
-            if response.status_code not in (401, 403):
+            if not self._is_auth_bootstrap_error(response):
                 raise BijiRequestError(
                     f"Biji browser login check failed: {response.status_code}"
                 )
@@ -165,6 +165,14 @@ class BijiBrowserClient(BijiClient):
         page.goto(self.note_url, wait_until="domcontentloaded", timeout=self.timeout * 1000)
         self._page_ready = True
 
+    @staticmethod
+    def _is_auth_bootstrap_error(response: _BrowserResponse) -> bool:
+        if response.status_code in (401, 403):
+            return True
+        if response.status_code != 400:
+            return False
+        return str((response.json() or {}).get("message") or "").strip() == "ParseTokenFailed"
+
     def _request(self, path: str, *, params: Optional[dict[str, Any]] = None):
         url = urljoin(f"{self.api_base}/", path.lstrip("/"))
         return self._browser_request_with_retries(url, params=params)
@@ -227,7 +235,7 @@ class BijiBrowserClient(BijiClient):
                     continue
                 raise
 
-            if response.status_code in (401, 403):
+            if self._is_auth_bootstrap_error(response):
                 if attempt < 2:
                     self._refresh_auth_context()
                     time.sleep(0.5 * (attempt + 1))

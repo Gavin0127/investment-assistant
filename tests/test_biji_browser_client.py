@@ -79,7 +79,7 @@ def test_login_waits_until_user_info_is_ready(tmp_path):
     client._ensure_browser = MagicMock(return_value=client._page)
     client._browser_fetch_response = MagicMock(
         side_effect=[
-            _FakeResponse(status_code=403, payload={"message": "LoginRequired"}),
+            _FakeResponse(status_code=400, payload={"message": "ParseTokenFailed"}),
             _FakeResponse(status_code=200, payload={"c": {"uid": "123"}}),
         ]
     )
@@ -127,7 +127,7 @@ def test_browser_request_retries_after_auth_bootstrap(monkeypatch, tmp_path):
         "_browser_fetch_response",
         MagicMock(
             side_effect=[
-                _FakeResponse(status_code=403, payload={"message": "LoginRequired"}),
+                _FakeResponse(status_code=400, payload={"message": "ParseTokenFailed"}),
                 _FakeResponse(status_code=200, payload=_load_json(_LIST_FIXTURE)),
             ]
         ),
