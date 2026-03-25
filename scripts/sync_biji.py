@@ -6,7 +6,9 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import shutil
 import sys
+from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -23,6 +25,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--page-size", type=int, default=None, help="每页抓取数量")
     parser.add_argument("--full", action="store_true", help="预留的全量同步开关")
     parser.add_argument("--login", action="store_true", help="打开浏览器登录并保存 Biji 会话")
+    parser.add_argument("--rebuild", action="store_true", help="清空本地 Biji 数据后重建")
     parser.add_argument("--no-images", action="store_true", help="跳过图片下载，保留远程 URL")
     parser.add_argument("-v", "--verbose", action="store_true", help="输出详细日志")
     return parser
@@ -46,6 +49,18 @@ def build_biji_client(storage: Storage, biji_config: dict, *, login: bool = Fals
     )
 
 
+def rebuild_biji_data(data_dir: Path) -> None:
+    for path in (
+        data_dir / "biji_notes.db",
+        data_dir / "biji_markdown",
+        data_dir / "biji_raw",
+    ):
+        if path.is_dir():
+            shutil.rmtree(path)
+        elif path.exists():
+            path.unlink()
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -65,6 +80,8 @@ def main(argv: list[str] | None = None) -> int:
         db_path = data_dir / "biji_notes.db"
         markdown_root = data_dir / "biji_markdown"
         raw_root = data_dir / "biji_raw"
+        if args.rebuild:
+            rebuild_biji_data(data_dir)
         page_size = (
             args.page_size
             if args.page_size is not None

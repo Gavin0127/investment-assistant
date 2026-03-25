@@ -12,6 +12,7 @@ def test_parser_defaults():
     assert args.page_size is None
     assert args.full is False
     assert args.login is False
+    assert args.rebuild is False
     assert args.no_images is False
     assert args.verbose is False
     assert args.base_dir is None
@@ -260,6 +261,61 @@ def test_main_uses_bearer_client_when_auth_mode_is_bearer(monkeypatch, tmp_path,
     assert state["api_base"] == "https://notes-api.biji.com"
     assert state["bearer_token"] == "secret-token"
     assert state["page_size"] == 50
+
+
+def test_main_rebuild_removes_old_biji_data_before_sync(monkeypatch, tmp_path):
+    data_dir = tmp_path / "data"
+    (data_dir / "biji_markdown" / "旧目录").mkdir(parents=True)
+    (data_dir / "biji_markdown" / "旧目录" / "index.md").write_text("old", encoding="utf-8")
+    (data_dir / "biji_raw").mkdir(parents=True)
+    (data_dir / "biji_raw" / "n1.json").write_text("{}", encoding="utf-8")
+    (data_dir / "biji_notes.db").write_text("not-a-real-db", encoding="utf-8")
+    (data_dir / "biji_browser").mkdir(parents=True)
+    (data_dir / "biji_browser" / "keep.txt").write_text("keep", encoding="utf-8")
+
+    class FakeStorage:
+        def __init__(self, base_dir=None):
+            self.base_dir = Path(base_dir)
+
+        def get_biji_config(self):
+            return {
+                "auth_mode": "browser_session",
+                "api_base": "https://notes-api.biji.com",
+                "browser_profile_dir": str(self.base_dir / "data" / "biji_browser"),
+                "page_size": 50,
+                "download_images": True,
+            }
+
+    class FakeBrowserClient:
+        def __init__(self, *args, **kwargs):
+            self.download_asset = lambda *_args, **_kwargs: None
+
+        def close(self):
+            return None
+
+    class FakeDB:
+        def __init__(self, db_path):
+            assert not Path(db_path).exists()
+
+    class FakeSyncService:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        def sync_once(self):
+            return {"created": 1, "updated": 0, "skipped": 0, "failed": 0}
+
+    monkeypatch.setattr("scripts.sync_biji.Storage", FakeStorage)
+    monkeypatch.setattr("scripts.sync_biji.BijiBrowserClient", FakeBrowserClient)
+    monkeypatch.setattr("scripts.sync_biji.BijiDB", FakeDB)
+    monkeypatch.setattr("scripts.sync_biji.BijiSyncService", FakeSyncService)
+
+    exit_code = main(["--base-dir", str(tmp_path), "--rebuild"])
+
+    assert exit_code == 0
+    assert not (data_dir / "biji_markdown" / "旧目录").exists()
+    assert not (data_dir / "biji_raw" / "n1.json").exists()
+    assert not (data_dir / "biji_notes.db").exists()
+    assert (data_dir / "biji_browser" / "keep.txt").exists()
 
 
 def test_main_exits_cleanly_on_unexpected_error(monkeypatch, tmp_path, capsys):
