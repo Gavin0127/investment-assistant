@@ -66,6 +66,13 @@ class FakeClient:
         Path(dest_path).parent.mkdir(parents=True, exist_ok=True)
         Path(dest_path).write_bytes(b"image-bytes")
 
+    def get_note_page_snapshot(self, note_id: str) -> dict:
+        return {
+            "note_url": f"https://www.biji.com/note/{note_id}/web",
+            "html": "",
+            "text": "",
+        }
+
 
 class RepeatingPageClient(FakeClient):
     def __init__(self, *args, **kwargs):
@@ -136,7 +143,71 @@ def test_first_sync_creates_db_row_and_markdown(tmp_path):
     note = db.get_note("n1")
     assert note["title"] == "第一篇"
     assert note["markdown_content"]
-    assert (tmp_path / "biji_markdown" / "n1" / "index.md").exists()
+    assert (tmp_path / "biji_markdown" / "第一篇" / "index.md").exists()
+
+
+def test_sync_exports_ai_note_with_title_directory_and_dual_sections(tmp_path):
+    from core.biji_sync import BijiSyncService
+
+    class PageAwareClient(FakeClient):
+        def get_note_page_snapshot(self, note_id: str):
+            return {
+                "note_url": f"https://www.biji.com/note/{note_id}/web",
+                "html": "<h2>原始内容</h2><div>逐字原文</div><h2>AI 总结</h2><div>整理摘要</div>",
+                "text": "原始内容\n逐字原文\nAI 总结\n整理摘要",
+            }
+
+    db = BijiDB(str(tmp_path / "biji.db"))
+    service = BijiSyncService(
+        client=PageAwareClient(detail_overrides={"assets": []}),
+        db=db,
+        markdown_root=str(tmp_path / "biji_markdown"),
+        raw_root=str(tmp_path / "biji_raw"),
+        page_size=10,
+    )
+
+    result = service.sync_once()
+
+    assert result["created"] == 1
+    note = db.get_note("n1")
+    assert note["content_mode"] == "ai_note"
+    assert note["original_content"] == "逐字原文"
+    assert note["ai_summary_content"] == "整理摘要"
+    assert note["export_dir_name"] == "第一篇"
+    markdown_path = tmp_path / "biji_markdown" / "第一篇" / "index.md"
+    markdown = markdown_path.read_text(encoding="utf-8")
+    assert "## 原始内容" in markdown
+    assert "## AI 总结（需验证可信度）" in markdown
+    assert not (tmp_path / "biji_markdown" / "n1").exists()
+
+
+def test_sync_exports_native_note_without_ai_heading(tmp_path):
+    from core.biji_sync import BijiSyncService
+
+    class NativeClient(FakeClient):
+        def get_note_page_snapshot(self, note_id: str):
+            return {
+                "note_url": f"https://www.biji.com/note/{note_id}/web",
+                "html": "<article><p>这是原生正文</p></article>",
+                "text": "这是原生正文",
+            }
+
+    db = BijiDB(str(tmp_path / "biji.db"))
+    service = BijiSyncService(
+        client=NativeClient(detail_overrides={"raw_content": "这是原生正文", "assets": []}),
+        db=db,
+        markdown_root=str(tmp_path / "biji_markdown"),
+        raw_root=str(tmp_path / "biji_raw"),
+        page_size=10,
+    )
+
+    service.sync_once()
+
+    note = db.get_note("n1")
+    markdown = (tmp_path / "biji_markdown" / "第一篇" / "index.md").read_text(encoding="utf-8")
+    assert note["content_mode"] == "native_note"
+    assert "## 笔记正文" in markdown
+    assert "AI 总结（需验证可信度）" not in markdown
 
 
 def test_second_sync_skips_unchanged_note(tmp_path):
@@ -177,14 +248,14 @@ def test_sync_replaces_remote_image_urls_with_local_relative_paths(tmp_path):
 
     service.sync_once()
 
-    markdown_path = tmp_path / "biji_markdown" / "n1" / "index.md"
+    markdown_path = tmp_path / "biji_markdown" / "第一篇" / "index.md"
     markdown = markdown_path.read_text(encoding="utf-8")
     assets = db.list_assets("n1")
 
     assert "https://get-notes.umiwi.com/a.png" not in markdown
     assert "assets/001.png" in markdown
     assert assets[0]["local_path"] == "assets/001.png"
-    assert (tmp_path / "biji_markdown" / "n1" / "assets" / "001.png").exists()
+    assert (tmp_path / "biji_markdown" / "第一篇" / "assets" / "001.png").exists()
 
 
 def test_failed_export_does_not_mark_note_as_synced_and_next_run_retries(tmp_path, monkeypatch):
@@ -267,7 +338,7 @@ def test_failed_asset_download_keeps_remote_url_in_markdown(tmp_path):
     )
 
     result = service.sync_once()
-    markdown_path = tmp_path / "biji_markdown" / "n1" / "index.md"
+    markdown_path = tmp_path / "biji_markdown" / "第一篇" / "index.md"
     markdown = markdown_path.read_text(encoding="utf-8")
     assets = db.list_assets("n1")
 
@@ -303,7 +374,7 @@ def test_external_asset_is_recorded_without_download(tmp_path):
     )
 
     result = service.sync_once()
-    markdown = (tmp_path / "biji_markdown" / "n1" / "index.md").read_text(encoding="utf-8")
+    markdown = (tmp_path / "biji_markdown" / "第一篇" / "index.md").read_text(encoding="utf-8")
     assets = db.list_assets("n1")
 
     assert result["created"] == 1
@@ -351,7 +422,7 @@ def test_no_images_only_skips_image_downloads(tmp_path):
 
     service.sync_once()
 
-    markdown = (tmp_path / "biji_markdown" / "n1" / "index.md").read_text(encoding="utf-8")
+    markdown = (tmp_path / "biji_markdown" / "第一篇" / "index.md").read_text(encoding="utf-8")
     assets = db.list_assets("n1")
 
     assert client.download_calls == 1
@@ -361,7 +432,7 @@ def test_no_images_only_skips_image_downloads(tmp_path):
     assert assets[1]["asset_type"] == "audio"
     assert assets[1]["download_status"] == "done"
     assert assets[1]["local_path"] == "assets/002.mp3"
-    assert (tmp_path / "biji_markdown" / "n1" / "assets" / "002.mp3").exists()
+    assert (tmp_path / "biji_markdown" / "第一篇" / "assets" / "002.mp3").exists()
 
 
 def test_empty_raw_content_still_exports_stable_markdown_file(tmp_path):
@@ -378,7 +449,7 @@ def test_empty_raw_content_still_exports_stable_markdown_file(tmp_path):
     )
 
     result = service.sync_once()
-    markdown_path = tmp_path / "biji_markdown" / "n1" / "index.md"
+    markdown_path = tmp_path / "biji_markdown" / "第一篇" / "index.md"
     content = markdown_path.read_text(encoding="utf-8")
 
     assert result["created"] == 1

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 ILLEGAL_TITLE_CHARS = '/\\:*?"<>|'
 
 
@@ -24,7 +26,7 @@ def slugify_note_title(
 
 
 def classify_note_content(api_detail: dict, web_snapshot: dict | None) -> dict:
-    sections = (web_snapshot or {}).get("raw_sections") or {}
+    sections = _extract_raw_sections(web_snapshot)
     original_content = (sections.get("original_content") or "").strip()
     ai_summary_content = (sections.get("ai_summary_content") or "").strip()
     native_content = (sections.get("native_content") or api_detail.get("raw_content") or "").strip()
@@ -52,6 +54,44 @@ def classify_note_content(api_detail: dict, web_snapshot: dict | None) -> dict:
         "display_content": native_content,
         "content_source": "web_page" if web_snapshot else "api_detail",
     }
+
+
+def _extract_raw_sections(web_snapshot: dict | None) -> dict[str, str]:
+    snapshot = web_snapshot or {}
+    sections = snapshot.get("raw_sections") or {}
+    if sections:
+        return sections
+
+    text = str(snapshot.get("text") or "").strip()
+    if not text:
+        return {}
+
+    ai_markers = ("AI 总结", "智能总结")
+    if "原始内容" in text and any(marker in text for marker in ai_markers):
+        ai_marker = next(marker for marker in ai_markers if marker in text)
+        original_content = _slice_text_between(text, "原始内容", ai_marker)
+        ai_summary_content = _slice_text_after(text, ai_marker)
+        return {
+            "original_content": original_content,
+            "ai_summary_content": ai_summary_content,
+        }
+
+    return {"native_content": text}
+
+
+def _slice_text_between(text: str, start_marker: str, end_marker: str) -> str:
+    pattern = re.compile(
+        rf"{re.escape(start_marker)}\s*(.*?)\s*{re.escape(end_marker)}",
+        re.DOTALL,
+    )
+    match = pattern.search(text)
+    return (match.group(1) if match else "").strip()
+
+
+def _slice_text_after(text: str, marker: str) -> str:
+    pattern = re.compile(rf"{re.escape(marker)}\s*(.*)", re.DOTALL)
+    match = pattern.search(text)
+    return (match.group(1) if match else "").strip()
 
 
 def build_display_markdown_sections(note: dict) -> str:

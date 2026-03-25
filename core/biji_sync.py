@@ -4,11 +4,18 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shutil
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlparse
 
 from markdownify import markdownify
+
+from core.biji_content_parser import (
+    build_display_markdown_sections,
+    classify_note_content,
+    slugify_note_title,
+)
 
 
 class BijiSyncService:
@@ -36,11 +43,13 @@ class BijiSyncService:
         self.raw_root = Path(raw_root)
         self.page_size = page_size
         self.download_images = download_images
+        self._used_export_dirs: set[str] = set()
         self.markdown_root.mkdir(parents=True, exist_ok=True)
         self.raw_root.mkdir(parents=True, exist_ok=True)
 
     def sync_once(self) -> dict[str, int]:
         result = {"created": 0, "updated": 0, "skipped": 0, "failed": 0}
+        self._used_export_dirs = set()
         seen_note_ids: set[str] = set()
         page = 1
         since_id = "0"
@@ -72,30 +81,53 @@ class BijiSyncService:
 
                 try:
                     detail = self.client.get_note_detail(note_id)
-                    markdown = self._normalize_markdown(detail.get("raw_content") or "")
-                    asset_records, replacements = self._download_assets(
-                        note_id, detail.get("assets") or []
+                    normalized_raw_content = self._normalize_markdown(detail.get("raw_content") or "")
+                    normalized_detail = {**detail, "raw_content": normalized_raw_content}
+                    web_snapshot = self._get_note_page_snapshot(note_id)
+                    content_parts = classify_note_content(normalized_detail, web_snapshot)
+                    export_dir_name = slugify_note_title(
+                        detail.get("title") or summary.get("title") or "",
+                        note_id=note_id,
+                        existing=self._used_export_dirs,
                     )
-                    markdown = self._replace_asset_urls(markdown, replacements)
-                    export_path = self._export_note_markdown(note_id, detail, markdown)
-                    content_hash = hashlib.sha256(markdown.encode("utf-8")).hexdigest()
+                    self._used_export_dirs.add(export_dir_name)
+                    self._cleanup_old_export_dir(existing, export_dir_name)
+                    asset_records, replacements = self._download_assets(
+                        export_dir_name, note_id, detail.get("assets") or []
+                    )
+                    markdown_body = build_display_markdown_sections(content_parts)
+                    markdown_body = self._replace_asset_urls(markdown_body, replacements)
+                    export_path = self._export_note_markdown(
+                        export_dir_name,
+                        note_id,
+                        detail,
+                        content_parts.get("content_mode") or "unknown",
+                        markdown_body,
+                    )
                     now_ms = int(datetime.now().timestamp() * 1000)
-                    self._write_raw_snapshot(note_id, detail)
+                    normalized_note = {
+                        "note_id": note_id,
+                        "title": detail.get("title") or summary.get("title") or "",
+                        "summary": detail.get("summary") or summary.get("summary") or "",
+                        "raw_content": normalized_raw_content,
+                        "markdown_content": markdown_body,
+                        "source_url": detail.get("source_url") or summary.get("source_url"),
+                        "created_at": detail.get("created_at") or summary.get("created_at"),
+                        "updated_at": detail.get("updated_at") or summary.get("updated_at"),
+                        "content_hash": hashlib.sha256(markdown_body.encode("utf-8")).hexdigest(),
+                        "missing_from_remote": 0,
+                        "last_exported_at": now_ms,
+                        "content_mode": content_parts.get("content_mode") or "unknown",
+                        "original_content": content_parts.get("original_content") or "",
+                        "ai_summary_content": content_parts.get("ai_summary_content") or "",
+                        "display_content": content_parts.get("display_content") or "",
+                        "content_source": content_parts.get("content_source") or "api_detail",
+                        "export_dir_name": export_dir_name,
+                    }
+                    self._write_raw_snapshot(note_id, detail, web_snapshot, normalized_note)
 
                     self.db.upsert_note(
-                        {
-                            "note_id": note_id,
-                            "title": detail.get("title") or summary.get("title") or "",
-                            "summary": detail.get("summary") or summary.get("summary") or "",
-                            "raw_content": detail.get("raw_content") or "",
-                            "markdown_content": markdown,
-                            "source_url": detail.get("source_url") or summary.get("source_url"),
-                            "created_at": detail.get("created_at") or summary.get("created_at"),
-                            "updated_at": detail.get("updated_at") or summary.get("updated_at"),
-                            "content_hash": content_hash,
-                            "missing_from_remote": 0,
-                            "last_exported_at": now_ms,
-                        }
+                        normalized_note
                     )
 
                     for asset_record in asset_records:
@@ -166,8 +198,15 @@ class BijiSyncService:
             return markdownify(text, heading_style="ATX").strip()
         return text
 
-    def _export_note_markdown(self, note_id: str, detail: dict, markdown: str) -> Path:
-        note_dir = self.markdown_root / note_id
+    def _export_note_markdown(
+        self,
+        export_dir_name: str,
+        note_id: str,
+        detail: dict,
+        content_mode: str,
+        markdown: str,
+    ) -> Path:
+        note_dir = self.markdown_root / export_dir_name
         note_dir.mkdir(parents=True, exist_ok=True)
         output_path = note_dir / "index.md"
 
@@ -176,6 +215,7 @@ class BijiSyncService:
                 "---",
                 f"note_id: {json.dumps(note_id, ensure_ascii=False)}",
                 f"title: {json.dumps(detail.get('title') or '', ensure_ascii=False)}",
+                f"content_mode: {json.dumps(content_mode, ensure_ascii=False)}",
                 f"created_at: {json.dumps(detail.get('created_at') or '', ensure_ascii=False)}",
                 f"updated_at: {json.dumps(detail.get('updated_at') or '', ensure_ascii=False)}",
                 f"source_url: {json.dumps(detail.get('source_url') or '', ensure_ascii=False)}",
@@ -190,16 +230,35 @@ class BijiSyncService:
         )
         return output_path
 
-    def _write_raw_snapshot(self, note_id: str, detail: dict) -> Path:
+    def _write_raw_snapshot(
+        self,
+        note_id: str,
+        detail: dict,
+        web_snapshot: dict | None,
+        normalized_note: dict,
+    ) -> Path:
         snapshot_path = self.raw_root / f"{note_id}.json"
         snapshot_path.write_text(
-            json.dumps(detail, ensure_ascii=False, indent=2),
+            json.dumps(
+                {
+                    "api_detail": detail,
+                    "web_snapshot": web_snapshot,
+                    "normalized_note": normalized_note,
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
             encoding="utf-8",
         )
         return snapshot_path
 
-    def _download_assets(self, note_id: str, assets: list[dict]) -> tuple[list[dict], dict[str, str]]:
-        note_dir = self.markdown_root / note_id
+    def _download_assets(
+        self,
+        export_dir_name: str,
+        note_id: str,
+        assets: list[dict],
+    ) -> tuple[list[dict], dict[str, str]]:
+        note_dir = self.markdown_root / export_dir_name
         assets_dir = note_dir / "assets"
         assets_dir.mkdir(parents=True, exist_ok=True)
 
@@ -256,6 +315,12 @@ class BijiSyncService:
 
         return asset_records, replacements
 
+    def _get_note_page_snapshot(self, note_id: str) -> dict | None:
+        get_snapshot = getattr(self.client, "get_note_page_snapshot", None)
+        if not callable(get_snapshot):
+            return None
+        return get_snapshot(note_id)
+
     @staticmethod
     def _replace_asset_urls(markdown: str, replacements: dict[str, str]) -> str:
         updated = markdown
@@ -279,6 +344,14 @@ class BijiSyncService:
             if not note_id or note_id in seen_note_ids:
                 continue
             self.db.upsert_note({**note, "missing_from_remote": 1})
+
+    def _cleanup_old_export_dir(self, existing: dict | None, export_dir_name: str) -> None:
+        previous_dir_name = str((existing or {}).get("export_dir_name") or "").strip()
+        if not previous_dir_name or previous_dir_name == export_dir_name:
+            return
+        previous_dir = self.markdown_root / previous_dir_name
+        if previous_dir.exists():
+            shutil.rmtree(previous_dir)
 
     @staticmethod
     def _guess_extension(
