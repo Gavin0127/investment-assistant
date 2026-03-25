@@ -17,6 +17,7 @@ dependencies = [
     "scrapling[fetchers]>=0.3.0",
     "httpx[socks]>=0.28.1",
     "markdownify>=0.13.1",
+    "patchright>=1.56.0",
 ]
 
 [dependency-groups]

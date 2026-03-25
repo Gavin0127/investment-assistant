@@ -663,8 +663,9 @@ Environment┘               ▼
   "auth_password_hash": null,
   "biji": {
     "enabled": true,
+    "auth_mode": "browser_session",
     "api_base": "https://notes-api.biji.com",
-    "bearer_token": "YOUR_BEARER_TOKEN",
+    "browser_profile_dir": "~/.investment-assistant/data/biji_browser",
     "page_size": 50,
     "download_images": true
   }
@@ -673,7 +674,9 @@ Environment┘               ▼
 
 说明：
 
-- `biji.bearer_token` 只保存在本地 `~/.investment-assistant/config.json` 中，不要提交到仓库
+- `biji.auth_mode` 默认推荐 `browser_session`，复用本地持久浏览器会话自动续期
+- `biji.browser_profile_dir` 用于保存 Biji 登录态；首次登录后，后续同步直接复用
+- `biji.bearer_token` 仍可保留为调试回退模式，但不再建议作为日常同步主路径
 - `biji_notes.db` 用于保存结构化笔记、附件和同步状态
 - `biji_markdown/<note_id>/index.md` 和 `assets/` 用于离线阅读
 
@@ -753,7 +756,28 @@ curl -X POST http://localhost:5000/api/auth/setup \
 
 ### Biji 笔记同步
 
-如果你希望同步 `https://www.biji.com/note` 下的笔记，请先在本地 `config.json` 中配置 `biji.bearer_token`，然后运行：
+如果你希望同步 `https://www.biji.com/note` 下的笔记，推荐先在本地 `config.json` 中配置浏览器会话模式：
+
+```json
+{
+  "biji": {
+    "enabled": true,
+    "auth_mode": "browser_session",
+    "api_base": "https://notes-api.biji.com",
+    "browser_profile_dir": "~/.investment-assistant/data/biji_browser",
+    "page_size": 50,
+    "download_images": true
+  }
+}
+```
+
+首次先保存登录态：
+
+```bash
+uv run python scripts/sync_biji.py --login -v
+```
+
+浏览器登录成功并自动关闭后，再运行同步。
 
 首次同步：
 
@@ -771,6 +795,17 @@ uv run python scripts/sync_biji.py -v
 
 ```bash
 uv run python scripts/sync_biji.py --no-images -v
+```
+
+如果你必须临时走旧的 Bearer 方案，可以在 `config.json` 中显式设置：
+
+```json
+{
+  "biji": {
+    "auth_mode": "bearer",
+    "bearer_token": "YOUR_BEARER_TOKEN"
+  }
+}
 ```
 
 同步输出位置：

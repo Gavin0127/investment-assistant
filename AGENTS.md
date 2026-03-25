@@ -51,6 +51,7 @@
 - `export GEMINI_API_KEY="..."` 或首次启动时输入 API Key。
 - `python web/app.py` 启动 Web 服务，访问 `http://localhost:5000`。
 - `python assistant.py` 启动 CLI 模式，用于快速验证逻辑。
+- `uv run python scripts/sync_biji.py --login -v` 首次保存 Biji 浏览器登录态。
 - `uv run python scripts/sync_biji.py -v` 运行 Biji 笔记增量同步。
 - 可选：配置认证（见 README），例如 `curl -X POST http://localhost:5000/api/auth/setup ...`。
 - 当前未配置自动化测试命令；修改后请做手动冒烟验证（首页、添加股票、发起研究、查看历史）。

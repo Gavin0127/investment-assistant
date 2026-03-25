@@ -12,6 +12,7 @@ class Storage:
     """本地 JSON 文件存储"""
 
     _FALSEY_STRINGS = {"0", "false", "no", "off", ""}
+    _BIJI_AUTH_MODES = {"bearer", "browser_session"}
 
     def __init__(self, base_dir: Optional[str] = None):
         self.base_dir = Path(base_dir or os.path.expanduser("~/.investment-assistant"))
@@ -106,10 +107,18 @@ class Storage:
     def get_biji_config(self) -> Dict:
         """获取 Biji 同步配置"""
         config = self.get_config().get("biji") or {}
+        auth_mode = str(config.get("auth_mode") or "browser_session").strip().lower()
+        if auth_mode not in self._BIJI_AUTH_MODES:
+            auth_mode = "browser_session"
         return {
             "enabled": self._parse_bool(config.get("enabled"), False),
+            "auth_mode": auth_mode,
             "api_base": config.get("api_base", "https://notes-api.biji.com"),
             "bearer_token": config.get("bearer_token"),
+            "browser_profile_dir": config.get(
+                "browser_profile_dir",
+                str(self.base_dir / "data" / "biji_browser"),
+            ),
             "page_size": self._parse_int(config.get("page_size"), 50),
             "download_images": self._parse_bool(config.get("download_images"), True),
         }
