@@ -176,6 +176,46 @@ def test_browser_fetch_response_uses_context_request_with_auth_headers(monkeypat
     )
 
 
+def test_get_note_page_snapshot_returns_html_and_visible_text(monkeypatch, tmp_path):
+    from core.biji_browser_client import BijiBrowserClient
+
+    client = BijiBrowserClient(
+        api_base="https://notes-api.biji.com",
+        profile_dir=str(tmp_path / "biji_browser"),
+    )
+
+    class FakeLocator:
+        def inner_text(self, timeout=None):
+            return "正文\n原始内容\nAI 总结"
+
+    class FakePage:
+        def __init__(self):
+            self.visited = []
+
+        def goto(self, url, wait_until=None, timeout=None):
+            self.visited.append(url)
+
+        def wait_for_timeout(self, ms):
+            return None
+
+        def content(self):
+            return "<html><body><h2>原始内容</h2><div>逐字原文</div></body></html>"
+
+        def locator(self, selector):
+            assert selector == "body"
+            return FakeLocator()
+
+    fake_page = FakePage()
+    monkeypatch.setattr(client, "_ensure_browser", lambda: fake_page)
+    monkeypatch.setattr(client, "_ensure_page_ready", lambda: fake_page)
+
+    snapshot = client.get_note_page_snapshot("1901")
+
+    assert snapshot["note_url"].endswith("/1901/web")
+    assert "原始内容" in snapshot["html"]
+    assert "AI 总结" in snapshot["text"]
+
+
 def test_download_asset_uses_browser_cookies_for_requests(monkeypatch, tmp_path):
     from core.biji_browser_client import BijiBrowserClient
 

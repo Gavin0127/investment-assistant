@@ -88,6 +88,17 @@ class BijiBrowserClient(BijiClient):
                 raise BijiAuthError("Biji browser login timed out")
             page.wait_for_timeout(poll_interval_ms)
 
+    def get_note_page_snapshot(self, note_id: str) -> dict[str, str]:
+        page = self._ensure_page_ready()
+        note_url = f"https://www.biji.com/note/{note_id}/web"
+        page.goto(note_url, wait_until="domcontentloaded", timeout=self.timeout * 1000)
+        page.wait_for_timeout(1500)
+        return {
+            "note_url": note_url,
+            "html": page.content(),
+            "text": page.locator("body").inner_text(timeout=self.timeout * 1000),
+        }
+
     @staticmethod
     def _parse_cookie_value(cookie_header: str, name: str) -> str:
         prefix = f"{name}="
