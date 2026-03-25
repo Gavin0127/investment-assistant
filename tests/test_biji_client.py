@@ -66,6 +66,7 @@ def test_parse_list_fixture_extracts_standardized_notes():
     assert notes[0]["note_id"] == "1905199764681666160"
     assert notes[0]["title"] == "AI时代小团队效率提升实践与Agent发展趋势分享"
     assert notes[0]["summary"].startswith("录音时间：2026-03-24 19:14:28")
+    assert notes[0]["note_type"] == "internal_record"
     assert notes[0]["source_url"] == "https://www.biji.com/note/1905199764681666160"
     assert notes[0]["created_at"] == "2026-03-24 19:14:28"
     assert notes[0]["updated_at"] == "2026-03-24 20:34:16"
@@ -123,6 +124,8 @@ def test_parse_detail_fixture_extracts_standardized_detail():
     assert detail["note_id"] == "1905199764681666160"
     assert detail["title"] == "AI时代小团队效率提升实践与Agent发展趋势分享"
     assert detail["summary"].startswith("录音时间：2026-03-24 19:14:28")
+    assert detail["note_type"] == "internal_record"
+    assert detail["body_text"].startswith("录音时间：2026-03-24 19:14:28")
     assert detail["source_url"] == "https://www.biji.com/note/1905199764681666160"
     assert detail["raw_content"].startswith("### 📑 智能总结")
     assert detail["assets"] == [
@@ -152,6 +155,7 @@ def test_parse_detail_uses_body_text_when_content_missing():
     )
 
     assert detail["raw_content"] == "fallback body text"
+    assert detail["note_type"] is None
 
 
 def test_list_notes_retries_server_errors_and_returns_parsed_notes():

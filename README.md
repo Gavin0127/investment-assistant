@@ -678,7 +678,10 @@ Environment┘               ▼
 - `biji.browser_profile_dir` 用于保存 Biji 登录态；首次登录后，后续同步直接复用
 - `biji.bearer_token` 仍可保留为调试回退模式，但不再建议作为日常同步主路径
 - `biji_notes.db` 用于保存结构化笔记、附件和同步状态
-- `biji_markdown/<note_id>/index.md` 和 `assets/` 用于离线阅读
+- `biji_markdown/<标题或标题-note_id>/index.md` 和 `assets/` 用于离线阅读
+- AI 笔记默认导出 `原始内容` 与 `AI 总结（需验证可信度）`
+- 原生笔记导出 `笔记正文`
+- 无法稳定判型时保守导出 `内容摘录`
 
 #### portfolio_playbook.json
 存储总体投资策略，包括主线主题、主攻标的、持仓策略等。
@@ -783,7 +786,7 @@ uv run python scripts/sync_biji.py --login -v
 首次同步：
 
 ```bash
-uv run python scripts/sync_biji.py --page-size 20 -v
+uv run python scripts/sync_biji.py --rebuild --page-size 20 -v
 ```
 
 后续增量同步：
@@ -797,6 +800,22 @@ uv run python scripts/sync_biji.py -v
 ```bash
 uv run python scripts/sync_biji.py --no-images -v
 ```
+
+如果要清空旧的 Biji SQLite、Markdown 和 raw 快照后重新全量导出：
+
+```bash
+uv run python scripts/sync_biji.py --rebuild -v
+```
+
+`--rebuild` 会清空：
+
+- `~/.investment-assistant/data/biji_notes.db`
+- `~/.investment-assistant/data/biji_markdown/`
+- `~/.investment-assistant/data/biji_raw/`
+
+不会清空：
+
+- `~/.investment-assistant/data/biji_browser/`
 
 如果你必须临时走旧的 Bearer 方案，可以在 `config.json` 中显式设置：
 
@@ -812,8 +831,19 @@ uv run python scripts/sync_biji.py --no-images -v
 同步输出位置：
 
 - `~/.investment-assistant/data/biji_notes.db`
-- `~/.investment-assistant/data/biji_markdown/<note_id>/index.md`
-- `~/.investment-assistant/data/biji_markdown/<note_id>/assets/`
+- `~/.investment-assistant/data/biji_markdown/<标题或标题-note_id>/index.md`
+- `~/.investment-assistant/data/biji_markdown/<标题或标题-note_id>/assets/`
+
+导出正文规则：
+
+- AI 笔记：
+  - `## 原始内容`
+  - `## AI 总结（需验证可信度）`
+- 原生笔记：
+  - `## 笔记正文`
+- 无法稳定判型：
+  - `## 内容摘录`
+- 站外链接只记录在正文和 `note_assets` 中，不穿透抓正文
 
 ---
 

@@ -28,6 +28,10 @@
 - 默认数据目录：`~/.investment-assistant/`。
 - 关键文件包含 `config.json`、`portfolio_playbook.json`、`user_preferences.json`。
 - Biji 同步数据位于 `data/`，包含 `biji_notes.db` 与 `biji_markdown/`。
+- `biji_markdown/` 子目录按标题命名；标题冲突或为空时追加 `note_id` 兜底。
+- AI 笔记默认导出 `原始内容` 与 `AI 总结（需验证可信度）` 两段。
+- 无法稳定判型时保守导出为 `内容摘录`。
+- 原生笔记只导出 `笔记正文`。
 - 个股数据位于 `stocks/{stock_id}/`，包含 `playbook.json`、`history.json` 与 `uploads/`。
 
 示例（简化）：
@@ -53,6 +57,7 @@
 - `python assistant.py` 启动 CLI 模式，用于快速验证逻辑。
 - `uv run playwright install chromium` 首次安装 Biji 浏览器同步所需的 Chromium runtime。
 - `uv run python scripts/sync_biji.py --login -v` 首次保存 Biji 浏览器登录态。
+- `uv run python scripts/sync_biji.py --rebuild -v` 清空本地 Biji 数据并按新结构全量重建。
 - `uv run python scripts/sync_biji.py -v` 运行 Biji 笔记增量同步。
 - 可选：配置认证（见 README），例如 `curl -X POST http://localhost:5000/api/auth/setup ...`。
 - 当前未配置自动化测试命令；修改后请做手动冒烟验证（首页、添加股票、发起研究、查看历史）。

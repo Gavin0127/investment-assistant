@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-import re
-
 ILLEGAL_TITLE_CHARS = '/\\:*?"<>|'
+AI_SUMMARY_NOTE_TYPES = {"internal_record", "link"}
 
 
 def slugify_note_title(
@@ -26,72 +25,77 @@ def slugify_note_title(
 
 
 def classify_note_content(api_detail: dict, web_snapshot: dict | None) -> dict:
-    sections = _extract_raw_sections(web_snapshot)
-    original_content = (sections.get("original_content") or "").strip()
+    sections = (web_snapshot or {}).get("raw_sections") or {}
+    original_content = (
+        sections.get("original_content")
+        or sections.get("native_content")
+        or api_detail.get("ref_content")
+        or ""
+    ).strip()
     ai_summary_content = (sections.get("ai_summary_content") or "").strip()
-    native_content = (sections.get("native_content") or api_detail.get("raw_content") or "").strip()
+    native_content = (sections.get("native_content") or "").strip()
+    fallback_content = (api_detail.get("raw_content") or "").strip()
 
-    if original_content or ai_summary_content:
+    if original_content and ai_summary_content:
         display_content = build_display_markdown_sections(
             {
                 "content_mode": "ai_note",
                 "original_content": original_content,
-                "ai_summary_content": ai_summary_content or native_content,
+                "ai_summary_content": ai_summary_content,
             }
         )
         return {
             "content_mode": "ai_note",
             "original_content": original_content,
-            "ai_summary_content": ai_summary_content or native_content,
+            "ai_summary_content": ai_summary_content,
             "display_content": display_content,
             "content_source": "mixed" if web_snapshot else "api_detail",
         }
 
+    if _looks_like_ai_summary_note(api_detail):
+        display_content = build_display_markdown_sections(
+            {
+                "content_mode": "ai_note",
+                "original_content": original_content,
+                "ai_summary_content": fallback_content or ai_summary_content,
+            }
+        )
+        return {
+            "content_mode": "ai_note",
+            "original_content": original_content,
+            "ai_summary_content": fallback_content or ai_summary_content,
+            "display_content": display_content,
+            "content_source": "mixed" if web_snapshot else "api_detail",
+        }
+
+    if native_content:
+        return {
+            "content_mode": "native_note",
+            "original_content": "",
+            "ai_summary_content": "",
+            "display_content": native_content,
+            "content_source": "web_page",
+        }
+
     return {
-        "content_mode": "native_note",
+        "content_mode": "unknown",
         "original_content": "",
         "ai_summary_content": "",
-        "display_content": native_content,
-        "content_source": "web_page" if web_snapshot else "api_detail",
+        "display_content": fallback_content,
+        "content_source": "api_detail" if not web_snapshot else "mixed",
     }
 
 
-def _extract_raw_sections(web_snapshot: dict | None) -> dict[str, str]:
-    snapshot = web_snapshot or {}
-    sections = snapshot.get("raw_sections") or {}
-    if sections:
-        return sections
+def _looks_like_ai_summary_note(api_detail: dict) -> bool:
+    note_type = str(api_detail.get("note_type") or "").strip().lower()
+    if note_type in AI_SUMMARY_NOTE_TYPES:
+        return True
 
-    text = str(snapshot.get("text") or "").strip()
-    if not text:
-        return {}
+    raw_content = (api_detail.get("raw_content") or "").strip()
+    if raw_content.startswith("### 📑 智能总结") or raw_content.startswith("### **📑 智能总结"):
+        return True
 
-    ai_markers = ("AI 总结", "智能总结")
-    if "原始内容" in text and any(marker in text for marker in ai_markers):
-        ai_marker = next(marker for marker in ai_markers if marker in text)
-        original_content = _slice_text_between(text, "原始内容", ai_marker)
-        ai_summary_content = _slice_text_after(text, ai_marker)
-        return {
-            "original_content": original_content,
-            "ai_summary_content": ai_summary_content,
-        }
-
-    return {"native_content": text}
-
-
-def _slice_text_between(text: str, start_marker: str, end_marker: str) -> str:
-    pattern = re.compile(
-        rf"{re.escape(start_marker)}\s*(.*?)\s*{re.escape(end_marker)}",
-        re.DOTALL,
-    )
-    match = pattern.search(text)
-    return (match.group(1) if match else "").strip()
-
-
-def _slice_text_after(text: str, marker: str) -> str:
-    pattern = re.compile(rf"{re.escape(marker)}\s*(.*)", re.DOTALL)
-    match = pattern.search(text)
-    return (match.group(1) if match else "").strip()
+    return bool(api_detail.get("is_ai_generated")) or bool(api_detail.get("has_ai_processed"))
 
 
 def build_display_markdown_sections(note: dict) -> str:
@@ -102,4 +106,6 @@ def build_display_markdown_sections(note: dict) -> str:
             "## AI 总结（需验证可信度）\n\n"
             f"{(note.get('ai_summary_content') or '').strip()}\n"
         )
+    if note.get("content_mode") == "unknown":
+        return "## 内容摘录\n\n" + (note.get("display_content") or "").strip() + "\n"
     return "## 笔记正文\n\n" + (note.get("display_content") or "").strip() + "\n"

@@ -210,6 +210,251 @@ def test_sync_exports_native_note_without_ai_heading(tmp_path):
     assert "AI 总结（需验证可信度）" not in markdown
 
 
+def test_sync_uses_api_summary_and_web_body_for_link_note(tmp_path):
+    from core.biji_sync import BijiSyncService
+
+    class LinkClient(FakeClient):
+        def get_note_detail(self, note_id: str) -> dict:
+            detail = super().get_note_detail(note_id)
+            detail.update(
+                {
+                    "note_type": "link",
+                    "raw_content": "这是 AI 总结",
+                    "assets": [],
+                }
+            )
+            return detail
+
+        def get_note_page_snapshot(self, note_id: str):
+            return {
+                "note_url": f"https://www.biji.com/note/{note_id}/web",
+                "html": "<article><p>原文第一段</p><p>原文第二段</p></article>",
+                "text": "首页\n返回上一页\n第一篇\n原文第一段\n原文第二段",
+            }
+
+    db = BijiDB(str(tmp_path / "biji.db"))
+    service = BijiSyncService(
+        client=LinkClient(),
+        db=db,
+        markdown_root=str(tmp_path / "biji_markdown"),
+        raw_root=str(tmp_path / "biji_raw"),
+        page_size=10,
+    )
+
+    service.sync_once()
+
+    note = db.get_note("n1")
+    markdown = (tmp_path / "biji_markdown" / "第一篇" / "index.md").read_text(encoding="utf-8")
+    assert note["content_mode"] == "ai_note"
+    assert note["original_content"] == "原文第一段\n\n原文第二段"
+    assert note["ai_summary_content"] == "这是 AI 总结"
+    assert "## 原始内容" in markdown
+    assert "原文第一段" in markdown
+    assert "## AI 总结（需验证可信度）" in markdown
+
+
+def test_sync_internal_record_without_web_body_keeps_blank_original(tmp_path):
+    from core.biji_sync import BijiSyncService
+
+    class InternalRecordClient(FakeClient):
+        def get_note_detail(self, note_id: str) -> dict:
+            detail = super().get_note_detail(note_id)
+            detail.update(
+                {
+                    "note_type": "internal_record",
+                    "raw_content": "### 📑 智能总结\n\n这是 AI 总结",
+                    "assets": [],
+                }
+            )
+            return detail
+
+        def get_note_page_snapshot(self, note_id: str):
+            return {
+                "note_url": f"https://www.biji.com/note/{note_id}/web",
+                "html": "<article>resource not exist</article>",
+                "text": "第一篇\n当前网页无法显示\n重新加载\nresource not exist",
+            }
+
+    db = BijiDB(str(tmp_path / "biji.db"))
+    service = BijiSyncService(
+        client=InternalRecordClient(),
+        db=db,
+        markdown_root=str(tmp_path / "biji_markdown"),
+        raw_root=str(tmp_path / "biji_raw"),
+        page_size=10,
+    )
+
+    service.sync_once()
+
+    note = db.get_note("n1")
+    markdown = (tmp_path / "biji_markdown" / "第一篇" / "index.md").read_text(encoding="utf-8")
+    assert note["content_mode"] == "ai_note"
+    assert note["original_content"] == ""
+    assert note["ai_summary_content"].startswith("### 📑 智能总结")
+    assert "## 原始内容" in markdown
+    assert "## AI 总结（需验证可信度）" in markdown
+    assert "当前网页无法显示" not in markdown
+
+
+def test_sync_falls_back_to_api_detail_when_page_snapshot_unavailable(tmp_path):
+    from core.biji_sync import BijiSyncService
+
+    class BrokenPageClient(FakeClient):
+        def get_note_page_snapshot(self, note_id: str):
+            raise RuntimeError("page unavailable")
+
+    db = BijiDB(str(tmp_path / "biji.db"))
+    service = BijiSyncService(
+        client=BrokenPageClient(detail_overrides={"assets": []}),
+        db=db,
+        markdown_root=str(tmp_path / "biji_markdown"),
+        raw_root=str(tmp_path / "biji_raw"),
+        page_size=10,
+    )
+
+    result = service.sync_once()
+
+    assert result["created"] == 1
+    assert result["failed"] == 0
+    note = db.get_note("n1")
+    assert note["content_mode"] == "unknown"
+    markdown = (tmp_path / "biji_markdown" / "第一篇" / "index.md").read_text(encoding="utf-8")
+    assert "## 内容摘录" in markdown
+
+
+def test_sync_uses_note_id_suffix_when_skipped_note_already_owns_title_directory(tmp_path):
+    from core.biji_sync import BijiSyncService
+
+    class DuplicateTitleClient(FakeClient):
+        def __init__(self):
+            super().__init__(
+                detail_overrides={"assets": []},
+                page_responses={
+                    1: {
+                        "notes": [
+                            {
+                                "note_id": "n1",
+                                "title": "Foo",
+                                "summary": "旧摘要",
+                                "source_url": "https://www.biji.com/note/n1",
+                                "created_at": "2026-03-24 09:00:00",
+                                "updated_at": "2026-03-24 09:00:00",
+                            },
+                            {
+                                "note_id": "n2",
+                                "title": "Foo",
+                                "summary": "新摘要",
+                                "source_url": "https://www.biji.com/note/n2",
+                                "created_at": "2026-03-24 10:00:00",
+                                "updated_at": "2026-03-24 10:00:00",
+                            },
+                        ],
+                        "meta": {"has_more": False, "total_items": 2},
+                    }
+                },
+            )
+
+        def get_note_detail(self, note_id: str) -> dict:
+            detail = super().get_note_detail(note_id)
+            if note_id == "n2":
+                detail.update(
+                    {
+                        "note_id": "n2",
+                        "title": "Foo",
+                        "source_url": "https://www.biji.com/note/n2",
+                        "raw_content": "这是第二篇",
+                    }
+                )
+            return detail
+
+    db = BijiDB(str(tmp_path / "biji.db"))
+    db.upsert_note(
+        {
+            "note_id": "n1",
+            "title": "Foo",
+            "summary": "旧摘要",
+            "raw_content": "这是第一篇",
+            "markdown_content": "这是第一篇",
+            "source_url": "https://www.biji.com/note/n1",
+            "created_at": "2026-03-24 09:00:00",
+            "updated_at": "2026-03-24 09:00:00",
+            "content_hash": "hash-n1",
+            "missing_from_remote": 0,
+            "content_mode": "native_note",
+            "original_content": "",
+            "ai_summary_content": "",
+            "display_content": "这是第一篇",
+            "content_source": "web_page",
+            "export_dir_name": "Foo",
+        }
+    )
+
+    service = BijiSyncService(
+        client=DuplicateTitleClient(),
+        db=db,
+        markdown_root=str(tmp_path / "biji_markdown"),
+        raw_root=str(tmp_path / "biji_raw"),
+        page_size=10,
+    )
+
+    result = service.sync_once()
+
+    assert result["created"] == 1
+    assert result["skipped"] == 1
+    note_1 = db.get_note("n1")
+    note_2 = db.get_note("n2")
+    assert note_1["export_dir_name"] == "Foo"
+    assert note_2["export_dir_name"] == "Foo-n2"
+    assert (tmp_path / "biji_markdown" / "Foo-n2" / "index.md").exists()
+
+
+def test_normalize_web_snapshot_does_not_treat_inline_words_as_ai_sections(tmp_path):
+    from core.biji_sync import BijiSyncService
+
+    db = BijiDB(str(tmp_path / "biji.db"))
+    service = BijiSyncService(
+        client=FakeClient(),
+        db=db,
+        markdown_root=str(tmp_path / "biji_markdown"),
+        raw_root=str(tmp_path / "biji_raw"),
+        page_size=10,
+    )
+
+    snapshot = service._normalize_web_snapshot(
+        {
+            "html": "<article><p>今天讨论“原始内容”字段和“AI 总结”按钮该怎么展示。正文还在继续。</p></article>",
+            "text": "今天讨论“原始内容”字段和“AI 总结”按钮该怎么展示。正文还在继续。",
+        }
+    )
+
+    assert snapshot["raw_sections"] == {
+        "native_content": "今天讨论“原始内容”字段和“AI 总结”按钮该怎么展示。正文还在继续。"
+    }
+
+
+def test_normalize_web_snapshot_discards_shell_and_error_page_text(tmp_path):
+    from core.biji_sync import BijiSyncService
+
+    db = BijiDB(str(tmp_path / "biji.db"))
+    service = BijiSyncService(
+        client=FakeClient(),
+        db=db,
+        markdown_root=str(tmp_path / "biji_markdown"),
+        raw_root=str(tmp_path / "biji_raw"),
+        page_size=10,
+    )
+
+    snapshot = service._normalize_web_snapshot(
+        {
+            "html": "<article>resource not exist</article>",
+            "text": "首页\nAI助手\n知识库\n标签\n安装小龙虾技能\n让 AI 助手帮你记笔记，对话即可完成。\n下载App\nGet达人\n返回上一页\n当前网页无法显示\n重新加载\nresource not exist",
+        },
+        title="第一篇",
+    )
+
+    assert snapshot["raw_sections"] == {}
+
+
 def test_second_sync_skips_unchanged_note(tmp_path):
     from core.biji_sync import BijiSyncService
 

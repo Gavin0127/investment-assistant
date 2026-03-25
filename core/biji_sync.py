@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import shutil
 from datetime import datetime
 from pathlib import Path
@@ -49,7 +50,7 @@ class BijiSyncService:
 
     def sync_once(self) -> dict[str, int]:
         result = {"created": 0, "updated": 0, "skipped": 0, "failed": 0}
-        self._used_export_dirs = set()
+        self._used_export_dirs = self._load_reserved_export_dirs()
         seen_note_ids: set[str] = set()
         page = 1
         since_id = "0"
@@ -83,13 +84,22 @@ class BijiSyncService:
                     detail = self.client.get_note_detail(note_id)
                     normalized_raw_content = self._normalize_markdown(detail.get("raw_content") or "")
                     normalized_detail = {**detail, "raw_content": normalized_raw_content}
-                    web_snapshot = self._get_note_page_snapshot(note_id)
+                    web_snapshot = self._get_note_page_snapshot(
+                        note_id,
+                        title=detail.get("title") or summary.get("title") or "",
+                    )
                     content_parts = classify_note_content(normalized_detail, web_snapshot)
+                    previous_export_dir = str((existing or {}).get("export_dir_name") or "").strip()
+                    reserved_export_dirs = set(self._used_export_dirs)
+                    if previous_export_dir:
+                        reserved_export_dirs.discard(previous_export_dir)
                     export_dir_name = slugify_note_title(
                         detail.get("title") or summary.get("title") or "",
                         note_id=note_id,
-                        existing=self._used_export_dirs,
+                        existing=reserved_export_dirs,
                     )
+                    if previous_export_dir:
+                        self._used_export_dirs.discard(previous_export_dir)
                     self._used_export_dirs.add(export_dir_name)
                     self._cleanup_old_export_dir(existing, export_dir_name)
                     asset_records, replacements = self._download_assets(
@@ -315,11 +325,102 @@ class BijiSyncService:
 
         return asset_records, replacements
 
-    def _get_note_page_snapshot(self, note_id: str) -> dict | None:
+    def _get_note_page_snapshot(self, note_id: str, *, title: str = "") -> dict | None:
         get_snapshot = getattr(self.client, "get_note_page_snapshot", None)
         if not callable(get_snapshot):
             return None
-        return get_snapshot(note_id)
+        try:
+            snapshot = get_snapshot(note_id)
+        except Exception:
+            return None
+        return self._normalize_web_snapshot(snapshot, title=title)
+
+    @classmethod
+    def _normalize_web_snapshot(cls, web_snapshot: dict | None, *, title: str = "") -> dict | None:
+        if web_snapshot is None:
+            return None
+
+        normalized = dict(web_snapshot)
+        existing_sections = normalized.get("raw_sections") or {}
+        if existing_sections:
+            normalized["raw_sections"] = existing_sections
+            return normalized
+
+        html = str(normalized.get("html") or "").strip()
+        html_sections = cls._extract_sections_from_html(html)
+        if html_sections:
+            normalized["raw_sections"] = html_sections
+            return normalized
+
+        text = str(normalized.get("text") or "").strip()
+        if not text:
+            normalized["raw_sections"] = {}
+            return normalized
+
+        native_content = cls._extract_native_content_from_text(text, title=title)
+        normalized["raw_sections"] = {"native_content": native_content} if native_content else {}
+        return normalized
+
+    @staticmethod
+    def _extract_sections_from_html(html: str) -> dict[str, str]:
+        if not html:
+            return {}
+
+        pattern = re.compile(
+            r"<h[1-6][^>]*>\s*原始内容\s*</h[1-6]>\s*(.*?)\s*"
+            r"<h[1-6][^>]*>\s*(?:AI 总结|智能总结)\s*</h[1-6]>\s*(.*)",
+            re.DOTALL | re.IGNORECASE,
+        )
+        match = pattern.search(html)
+        if not match:
+            return {}
+        return {
+            "original_content": markdownify(match.group(1), heading_style="ATX").strip(),
+            "ai_summary_content": markdownify(match.group(2), heading_style="ATX").strip(),
+        }
+
+    @staticmethod
+    def _extract_native_content_from_text(text: str, *, title: str = "") -> str:
+        noise_lines = {
+            "首页",
+            "AI助手",
+            "知识库",
+            "标签",
+            "下载App",
+            "Get达人",
+            "返回上一页",
+            "安装小龙虾技能",
+            "让 AI 助手帮你记笔记，对话即可完成。",
+            "重新加载",
+            "当前网页无法显示",
+            "resource not exist",
+        }
+        lines = [line.strip() for line in text.splitlines()]
+        lines = [line for line in lines if line and line not in noise_lines]
+        if title:
+            try:
+                title_index = next(index for index, line in enumerate(lines) if line == title)
+                lines = lines[title_index + 1 :]
+            except StopIteration:
+                pass
+
+        filtered_lines = [line for line in lines if line]
+        if not filtered_lines:
+            return ""
+
+        joined = "\n".join(filtered_lines)
+        if any(marker in joined for marker in ("当前网页无法显示", "resource not exist")):
+            return ""
+
+        return "\n\n".join(filtered_lines).strip()
+
+    def _load_reserved_export_dirs(self) -> set[str]:
+        reserved: set[str] = set()
+        for note in self.db.list_notes():
+            export_dir_name = str(note.get("export_dir_name") or "").strip()
+            if export_dir_name:
+                reserved.add(export_dir_name)
+        return reserved
 
     @staticmethod
     def _replace_asset_urls(markdown: str, replacements: dict[str, str]) -> str:
