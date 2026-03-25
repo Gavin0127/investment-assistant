@@ -774,6 +774,7 @@ curl -X POST http://localhost:5000/api/auth/setup \
 首次先保存登录态：
 
 ```bash
+uv run playwright install chromium
 uv run python scripts/sync_biji.py --login -v
 ```
 

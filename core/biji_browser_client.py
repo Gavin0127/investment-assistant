@@ -26,6 +26,10 @@ class _BrowserResponse:
 class BijiBrowserClient(BijiClient):
     """Use a persistent browser profile as the primary auth mechanism."""
 
+    _AUTH_REFRESH_BUFFER_SECONDS = 300
+    _AUTH_BOOTSTRAP_TIMEOUT_MS = 8000
+    _AUTH_BOOTSTRAP_POLL_MS = 500
+
     def __init__(
         self,
         api_base: str,
@@ -83,6 +87,83 @@ class BijiBrowserClient(BijiClient):
             if time.time() >= deadline:
                 raise BijiAuthError("Biji browser login timed out")
             page.wait_for_timeout(poll_interval_ms)
+
+    @staticmethod
+    def _parse_cookie_value(cookie_header: str, name: str) -> str:
+        prefix = f"{name}="
+        for chunk in cookie_header.split(";"):
+            item = chunk.strip()
+            if item.startswith(prefix):
+                return item[len(prefix):]
+        return ""
+
+    @staticmethod
+    def _parse_timestamp(value: Any) -> int:
+        try:
+            if value in (None, ""):
+                return 0
+            return int(value)
+        except (TypeError, ValueError):
+            return 0
+
+    def _read_auth_state(self, page) -> dict[str, Any]:
+        state = page.evaluate(
+            """
+            () => ({
+              token: window.localStorage.getItem('token') || '',
+              token_expire_at: window.localStorage.getItem('token_expire_at') || '',
+              refresh_token: window.localStorage.getItem('refresh_token') || '',
+              refresh_token_expire_at: window.localStorage.getItem('refresh_token_expire_at') || '',
+              csrf_token: '',
+              cookie_header: document.cookie || '',
+            })
+            """
+        )
+        state = state or {}
+        state["csrf_token"] = str(state.get("csrf_token") or "").strip() or self._parse_cookie_value(
+            state.get("cookie_header") or "",
+            "csrfToken",
+        )
+        return state
+
+    def _has_fresh_token(self, state: dict[str, Any]) -> bool:
+        token = str(state.get("token") or "").strip()
+        if not token:
+            return False
+        expire_at = self._parse_timestamp(state.get("token_expire_at"))
+        if not expire_at:
+            return True
+        return expire_at > int(time.time()) + self._AUTH_REFRESH_BUFFER_SECONDS
+
+    def _wait_for_auth_state(self, page, timeout_ms: Optional[int] = None) -> dict[str, Any]:
+        timeout_ms = self._AUTH_BOOTSTRAP_TIMEOUT_MS if timeout_ms is None else timeout_ms
+        deadline = time.time() + (timeout_ms / 1000.0)
+        last_state: dict[str, Any] = {}
+
+        while True:
+            last_state = self._read_auth_state(page)
+            if self._has_fresh_token(last_state):
+                return last_state
+            if not str(last_state.get("refresh_token") or "").strip():
+                return last_state
+            if time.time() >= deadline:
+                return last_state
+            page.wait_for_timeout(self._AUTH_BOOTSTRAP_POLL_MS)
+
+    def _build_fetch_headers(self, page) -> dict[str, str]:
+        state = self._wait_for_auth_state(page)
+        headers = {"Accept": "application/json"}
+        if self._has_fresh_token(state):
+            headers["Authorization"] = f"Bearer {str(state.get('token')).strip()}"
+        csrf_token = str(state.get("csrf_token") or "").strip()
+        if csrf_token:
+            headers["Xi-Csrf-Token"] = csrf_token
+        return headers
+
+    def _refresh_auth_context(self) -> None:
+        page = self._ensure_browser()
+        page.goto(self.note_url, wait_until="domcontentloaded", timeout=self.timeout * 1000)
+        self._page_ready = True
 
     def _request(self, path: str, *, params: Optional[dict[str, Any]] = None):
         url = urljoin(f"{self.api_base}/", path.lstrip("/"))
@@ -147,6 +228,10 @@ class BijiBrowserClient(BijiClient):
                 raise
 
             if response.status_code in (401, 403):
+                if attempt < 2:
+                    self._refresh_auth_context()
+                    time.sleep(0.5 * (attempt + 1))
+                    continue
                 raise BijiAuthError(f"Biji API authentication failed: {response.status_code}")
 
             if response.status_code == 429 or 500 <= response.status_code < 600:
@@ -176,29 +261,16 @@ class BijiBrowserClient(BijiClient):
             full_url = f"{url}?{urlencode(params, doseq=True)}"
 
         try:
-            result = page.evaluate(
-                """
-                async ({ url, headers }) => {
-                  const response = await fetch(url, {
-                    method: "GET",
-                    credentials: "include",
-                    headers,
-                  });
-                  const text = await response.text();
-                  return { status: response.status, text };
-                }
-                """,
-                {
-                    "url": full_url,
-                    "headers": {
-                        "Accept": "application/json",
-                    },
-                },
+            response = self._context.request.get(
+                full_url,
+                headers=self._build_fetch_headers(page),
+                timeout=self.timeout * 1000,
+                fail_on_status_code=False,
             )
         except Exception as exc:  # pragma: no cover - patchright exceptions vary by platform
             raise BijiRequestError(f"Biji browser request failed: {exc}") from exc
 
-        raw_text = result.get("text") or ""
+        raw_text = response.text() or ""
         payload = {}
         if raw_text:
             try:
@@ -206,7 +278,7 @@ class BijiBrowserClient(BijiClient):
             except json.JSONDecodeError as exc:
                 raise BijiRequestError("Biji browser returned non-JSON response") from exc
         return _BrowserResponse(
-            status_code=int(result.get("status") or 0),
+            status_code=int(response.status or 0),
             payload=payload,
             content=raw_text.encode("utf-8"),
         )
