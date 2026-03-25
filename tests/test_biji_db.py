@@ -10,6 +10,11 @@ def _make_note(note_id: str, **overrides):
         "note_id": note_id,
         "title": f"title-{note_id}",
         "summary": f"summary-{note_id}",
+        "content_mode": "unknown",
+        "original_content": "",
+        "ai_summary_content": "",
+        "display_content": "",
+        "content_source": "api_detail",
         "raw_content": f"<p>{note_id}</p>",
         "markdown_content": note_id,
         "source_url": f"https://www.biji.com/note/{note_id}",
@@ -17,6 +22,7 @@ def _make_note(note_id: str, **overrides):
         "updated_at": "2026-03-24 10:00:00",
         "content_hash": f"hash-{note_id}",
         "missing_from_remote": 0,
+        "export_dir_name": f"title-{note_id}",
     }
     note.update(overrides)
     return note
@@ -50,6 +56,30 @@ def test_upsert_note_updates_existing_row_and_parses_missing_flag(tmp_path):
     assert note["title"] == "新标题"
     assert note["summary"] == "新摘要"
     assert note["missing_from_remote"] == 0
+
+
+def test_upsert_note_persists_content_mode_and_export_dir_name(tmp_path):
+    db = BijiDB(str(tmp_path / "biji.db"))
+    db.upsert_note(
+        _make_note(
+            "n1",
+            content_mode="ai_note",
+            original_content="逐字原文",
+            ai_summary_content="AI 摘要",
+            display_content="## 原始内容\n\n逐字原文",
+            content_source="mixed",
+            export_dir_name="字节游戏分析",
+        )
+    )
+
+    note = db.get_note("n1")
+
+    assert note["content_mode"] == "ai_note"
+    assert note["original_content"] == "逐字原文"
+    assert note["ai_summary_content"] == "AI 摘要"
+    assert note["display_content"] == "## 原始内容\n\n逐字原文"
+    assert note["content_source"] == "mixed"
+    assert note["export_dir_name"] == "字节游戏分析"
 
 
 def test_list_notes_orders_by_updated_at_desc_then_note_id_desc(tmp_path):

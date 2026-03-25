@@ -9,6 +9,15 @@ from typing import Optional
 class BijiDB:
     """SQLite storage for Biji notes, assets, and sync state."""
 
+    _NOTE_COLUMNS = {
+        "content_mode": "TEXT",
+        "original_content": "TEXT",
+        "ai_summary_content": "TEXT",
+        "display_content": "TEXT",
+        "content_source": "TEXT",
+        "export_dir_name": "TEXT",
+    }
+
     def __init__(self, db_path: str):
         self.db_path = db_path
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
@@ -47,6 +56,11 @@ class BijiDB:
                     note_id TEXT PRIMARY KEY,
                     title TEXT,
                     summary TEXT,
+                    content_mode TEXT,
+                    original_content TEXT,
+                    ai_summary_content TEXT,
+                    display_content TEXT,
+                    content_source TEXT,
                     raw_content TEXT,
                     markdown_content TEXT,
                     source_url TEXT,
@@ -55,7 +69,8 @@ class BijiDB:
                     saved_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now') * 1000),
                     content_hash TEXT,
                     missing_from_remote INTEGER NOT NULL DEFAULT 0,
-                    last_exported_at INTEGER
+                    last_exported_at INTEGER,
+                    export_dir_name TEXT
                 );
 
                 CREATE TABLE IF NOT EXISTS note_assets (
@@ -88,24 +103,44 @@ class BijiDB:
                 );
                 """
             )
+            self._ensure_note_columns(conn)
             conn.commit()
+
+    def _ensure_note_columns(self, conn):
+        existing_columns = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(notes)").fetchall()
+        }
+        for column, column_type in self._NOTE_COLUMNS.items():
+            if column in existing_columns:
+                continue
+            conn.execute(f"ALTER TABLE notes ADD COLUMN {column} {column_type}")
 
     def upsert_note(self, note: dict):
         with self._get_conn() as conn:
             conn.execute(
                 """
                 INSERT INTO notes (
-                    note_id, title, summary, raw_content, markdown_content,
+                    note_id, title, summary, content_mode, original_content,
+                    ai_summary_content, display_content, content_source,
+                    raw_content, markdown_content,
                     source_url, created_at, updated_at, content_hash,
-                    missing_from_remote, last_exported_at
+                    missing_from_remote, last_exported_at, export_dir_name
                 ) VALUES (
-                    :note_id, :title, :summary, :raw_content, :markdown_content,
+                    :note_id, :title, :summary, :content_mode, :original_content,
+                    :ai_summary_content, :display_content, :content_source,
+                    :raw_content, :markdown_content,
                     :source_url, :created_at, :updated_at, :content_hash,
-                    :missing_from_remote, :last_exported_at
+                    :missing_from_remote, :last_exported_at, :export_dir_name
                 )
                 ON CONFLICT(note_id) DO UPDATE SET
                     title = excluded.title,
                     summary = excluded.summary,
+                    content_mode = excluded.content_mode,
+                    original_content = excluded.original_content,
+                    ai_summary_content = excluded.ai_summary_content,
+                    display_content = excluded.display_content,
+                    content_source = excluded.content_source,
                     raw_content = excluded.raw_content,
                     markdown_content = excluded.markdown_content,
                     source_url = excluded.source_url,
@@ -114,12 +149,18 @@ class BijiDB:
                     content_hash = excluded.content_hash,
                     missing_from_remote = excluded.missing_from_remote,
                     last_exported_at = excluded.last_exported_at,
+                    export_dir_name = excluded.export_dir_name,
                     saved_at = strftime('%s', 'now') * 1000
                 """,
                 {
                     "note_id": note["note_id"],
                     "title": note.get("title"),
                     "summary": note.get("summary"),
+                    "content_mode": note.get("content_mode"),
+                    "original_content": note.get("original_content"),
+                    "ai_summary_content": note.get("ai_summary_content"),
+                    "display_content": note.get("display_content"),
+                    "content_source": note.get("content_source"),
                     "raw_content": note.get("raw_content"),
                     "markdown_content": note.get("markdown_content"),
                     "source_url": note.get("source_url"),
@@ -130,6 +171,7 @@ class BijiDB:
                         note.get("missing_from_remote", 0)
                     ),
                     "last_exported_at": note.get("last_exported_at"),
+                    "export_dir_name": note.get("export_dir_name"),
                 },
             )
             conn.commit()
