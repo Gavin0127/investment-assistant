@@ -61,6 +61,14 @@ class Storage:
         except (TypeError, ValueError):
             return default
 
+    @staticmethod
+    def _parse_str(value: Any, default: str) -> str:
+        """安全解析字符串配置值。"""
+        if value is None:
+            return default
+        text = str(value).strip()
+        return text or default
+
     def get_llm_provider(self) -> str:
         """获取 LLM provider，环境变量优先，config 兜底，默认 gemini"""
         return (os.getenv("LLM_PROVIDER")
@@ -127,6 +135,39 @@ class Storage:
         """获取去空白后的 Biji Bearer Token"""
         token = (self.get_biji_config().get("bearer_token") or "").strip()
         return token or None
+
+    def get_biji_retrieval_config(self) -> Dict:
+        """获取 Biji 混合检索配置"""
+        config = self.get_config().get("biji_retrieval") or {}
+        chunk_size = self._parse_int(config.get("chunk_size"), 700)
+        if chunk_size <= 0:
+            chunk_size = 700
+
+        chunk_overlap = self._parse_int(config.get("chunk_overlap"), 120)
+        if chunk_overlap < 0 or chunk_overlap >= chunk_size:
+            chunk_overlap = min(120, max(chunk_size - 1, 0))
+
+        top_k = self._parse_int(config.get("top_k"), 10)
+        if top_k <= 0:
+            top_k = 10
+
+        return {
+            "embedding_provider": self._parse_str(
+                config.get("embedding_provider"),
+                "openai",
+            ),
+            "embedding_model": self._parse_str(
+                config.get("embedding_model"),
+                "text-embedding-3-large",
+            ),
+            "vector_db_dir": self._parse_str(
+                config.get("vector_db_dir"),
+                str(self.base_dir / "data" / "biji_vectors"),
+            ),
+            "chunk_size": chunk_size,
+            "chunk_overlap": chunk_overlap,
+            "top_k": top_k,
+        }
 
     # ==================== 总体 Playbook ====================
 
