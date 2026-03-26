@@ -82,6 +82,153 @@ def test_upsert_note_persists_content_mode_and_export_dir_name(tmp_path):
     assert note["export_dir_name"] == "字节游戏分析"
 
 
+def test_init_schema_creates_notes_fts_and_note_chunks(tmp_path):
+    db = BijiDB(str(tmp_path / "biji.db"))
+
+    with db._get_conn() as conn:
+        tables = {
+            row["name"]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type IN ('table', 'view')"
+            ).fetchall()
+        }
+
+    assert "notes_fts" in tables
+    assert "note_chunks" in tables
+
+
+def test_upsert_chunk_and_search_fts(tmp_path):
+    db = BijiDB(str(tmp_path / "biji.db"))
+    db.upsert_note(
+        _make_note(
+            "n1",
+            title="英伟达护城河分析",
+            original_content="原始内容",
+            ai_summary_content="Token经济与加速计算",
+            display_content="Token经济与护城河",
+        )
+    )
+    db.upsert_chunk(
+        {
+            "chunk_id": "n1-0001",
+            "note_id": "n1",
+            "chunk_index": 1,
+            "section_type": "ai_summary_content",
+            "text": "英伟达的Token经济和护城河分析",
+            "token_estimate": 42,
+            "char_start": 0,
+            "char_end": 16,
+            "content_hash": "chunk-hash",
+            "markdown_path": "/tmp/英伟达.md",
+        }
+    )
+
+    chunks = db.list_chunks("n1")
+    hits = db.search_notes_fts("英伟达")
+
+    assert chunks[0]["chunk_id"] == "n1-0001"
+    assert hits[0]["note_id"] == "n1"
+
+
+def test_existing_notes_are_backfilled_into_fts_on_reopen(tmp_path):
+    db_path = tmp_path / "biji.db"
+    with BijiDB(str(db_path))._get_conn() as conn:
+        conn.executescript(
+            """
+            DROP TABLE IF EXISTS notes_fts;
+            DROP TABLE IF EXISTS note_chunks;
+            DROP TABLE IF EXISTS sync_state;
+            DROP TABLE IF EXISTS api_snapshots;
+            DROP TABLE IF EXISTS note_assets;
+            DROP TABLE IF EXISTS notes;
+            CREATE TABLE notes (
+                note_id TEXT PRIMARY KEY,
+                title TEXT,
+                summary TEXT,
+                content_mode TEXT,
+                original_content TEXT,
+                ai_summary_content TEXT,
+                display_content TEXT,
+                content_source TEXT,
+                raw_content TEXT,
+                markdown_content TEXT,
+                source_url TEXT,
+                created_at TEXT,
+                updated_at TEXT,
+                saved_at INTEGER,
+                content_hash TEXT,
+                missing_from_remote INTEGER,
+                last_exported_at INTEGER,
+                export_dir_name TEXT
+            );
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO notes (
+                note_id, title, summary, content_mode, original_content, ai_summary_content,
+                display_content, content_source, raw_content, markdown_content, source_url,
+                created_at, updated_at, saved_at, content_hash, missing_from_remote,
+                last_exported_at, export_dir_name
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "n1", "英伟达分析", "摘要", "ai_note", "原始内容", "Token经济",
+                "Token经济与护城河", "mixed", "raw", "md", "https://www.biji.com/note/n1",
+                "2026-03-24 10:00:00", "2026-03-24 10:00:00", 0, "hash-n1", 0, 0, "英伟达分析",
+            ),
+        )
+        conn.commit()
+
+    db = BijiDB(str(db_path))
+    hits = db.search_notes_fts("英伟达")
+
+    assert hits[0]["note_id"] == "n1"
+
+
+def test_search_notes_fts_treats_special_characters_as_literal_text(tmp_path):
+    db = BijiDB(str(tmp_path / "biji.db"))
+    db.upsert_note(
+        _make_note(
+            "n1",
+            title="C++ 并发分析",
+            display_content="C++ 与护城河",
+        )
+    )
+
+    hits = db.search_notes_fts("C++")
+
+    assert hits[0]["note_id"] == "n1"
+
+
+def test_replace_chunks_for_note_validates_note_id_consistency(tmp_path):
+    db = BijiDB(str(tmp_path / "biji.db"))
+    db.upsert_note(_make_note("n1"))
+
+    try:
+        db.replace_chunks_for_note(
+            "n1",
+            [
+                {
+                    "chunk_id": "n2-0001",
+                    "note_id": "n2",
+                    "chunk_index": 1,
+                    "section_type": "ai_summary_content",
+                    "text": "wrong note",
+                    "token_estimate": 2,
+                    "char_start": 0,
+                    "char_end": 10,
+                    "content_hash": "chunk-hash",
+                    "markdown_path": "/tmp/n2.md",
+                }
+            ],
+        )
+    except ValueError as exc:
+        assert "note_id mismatch" in str(exc)
+    else:
+        raise AssertionError("expected ValueError")
+
+
 def test_list_notes_orders_by_updated_at_desc_then_note_id_desc(tmp_path):
     db = BijiDB(str(tmp_path / "biji.db"))
     db.upsert_note(_make_note("n1", updated_at="2026-03-24 09:00:00"))
