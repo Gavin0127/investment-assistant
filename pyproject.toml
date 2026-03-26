@@ -18,6 +18,7 @@ dependencies = [
     "httpx[socks]>=0.28.1",
     "markdownify>=0.13.1",
     "patchright>=1.56.0",
+    "lancedb>=0.10.0",
 ]
 
 [dependency-groups]
