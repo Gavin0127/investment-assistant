@@ -20,6 +20,12 @@ def test_index_cli_rebuilds_chunks_and_vectors(monkeypatch, tmp_path, capsys):
                 "top_k": 10,
             }
 
+        def get_api_key(self):
+            return "test-key"
+
+        def get_llm_base_url(self):
+            return None
+
     class FakeIndexer:
         def __init__(self, **kwargs):
             state["kwargs"] = kwargs
@@ -29,8 +35,9 @@ def test_index_cli_rebuilds_chunks_and_vectors(monkeypatch, tmp_path, capsys):
             return {"notes_indexed": 5, "chunks_indexed": 12}
 
     class FakeEmbedder:
-        def __init__(self, model):
+        def __init__(self, model, api_key=None, base_url=None):
             state["embedding_model"] = model
+            state["embedding_base_url"] = base_url
 
     monkeypatch.setattr("scripts.index_biji_notes.Storage", FakeStorage)
     monkeypatch.setattr("scripts.index_biji_notes.OpenAIEmbedder", FakeEmbedder)
@@ -43,6 +50,7 @@ def test_index_cli_rebuilds_chunks_and_vectors(monkeypatch, tmp_path, capsys):
     assert exit_code == 0
     assert state["kwargs"]["vector_db_dir"] == str(tmp_path / "data" / "biji_vectors")
     assert state["embedding_model"] == "text-embedding-3-large"
+    assert state["embedding_base_url"] is None
     assert state["full_rebuild"] is True
     assert "notes_indexed=5" in out
     assert "chunks_indexed=12" in out

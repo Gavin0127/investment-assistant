@@ -28,6 +28,7 @@ class BijiIndexBuilder:
         self.vector_db_dir = Path(vector_db_dir)
         self.chunk_size = chunk_size
         self.chunk_overlap = chunk_overlap
+        self._vector_enabled = True
 
     def rebuild(self, full_rebuild: bool = False) -> dict[str, int]:
         notes = self.db.list_notes()
@@ -50,9 +51,13 @@ class BijiIndexBuilder:
                 for chunk in chunks
             ]
             self.db.replace_chunks_for_note(note_id, enriched_chunks)
-            self.vector_store.delete_chunks_for_note(note_id)
-            if enriched_chunks:
-                self.vector_store.upsert_chunks(enriched_chunks)
+            if self._vector_enabled:
+                try:
+                    self.vector_store.delete_chunks_for_note(note_id)
+                    if enriched_chunks:
+                        self.vector_store.upsert_chunks(enriched_chunks)
+                except Exception:
+                    self._vector_enabled = False
             notes_indexed += 1
             chunks_indexed += len(enriched_chunks)
 

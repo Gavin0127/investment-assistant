@@ -155,3 +155,46 @@ def test_search_service_degrades_to_fts_when_vector_search_fails():
 
     assert result["results"][0]["note_id"] == "n1"
     assert result["results"][0]["markdown_path"] == "/tmp/英伟达.md"
+
+
+def test_search_service_expands_multi_term_fts_queries():
+    class FakeDB:
+        def search_notes_fts(self, query):
+            if query == "英伟达 护城河":
+                return []
+            if query == "英伟达":
+                return [{"note_id": "n1", "title": "英伟达分析"}]
+            if query == "护城河":
+                return [{"note_id": "n2", "title": "护城河分析"}]
+            return []
+
+        def list_chunks(self, note_id):
+            mapping = {
+                "n1": [
+                    {
+                        "chunk_id": "n1-0001",
+                        "section_type": "ai_summary_content",
+                        "text": "英伟达 token 经济",
+                        "markdown_path": "/tmp/n1.md",
+                    }
+                ],
+                "n2": [
+                    {
+                        "chunk_id": "n2-0001",
+                        "section_type": "ai_summary_content",
+                        "text": "核心护城河分析",
+                        "markdown_path": "/tmp/n2.md",
+                    }
+                ],
+            }
+            return mapping[note_id]
+
+    class FakeVectorStore:
+        def search(self, query, top_k=10):
+            return []
+
+    service = BijiHybridSearchService(db=FakeDB(), vector_store=FakeVectorStore())
+
+    result = service.search("英伟达 护城河", top_k=5)
+
+    assert [item["note_id"] for item in result["results"]] == ["n1", "n2"]

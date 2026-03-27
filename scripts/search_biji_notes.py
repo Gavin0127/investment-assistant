@@ -44,7 +44,11 @@ def main(argv: list[str] | None = None) -> int:
         try:
             vector_store = BijiVectorStore(
                 db_dir=cfg["vector_db_dir"],
-                embedder=OpenAIEmbedder(model=cfg["embedding_model"]),
+                embedder=OpenAIEmbedder(
+                    model=cfg["embedding_model"],
+                    api_key=storage.get_api_key(),
+                    base_url=storage.get_llm_base_url(),
+                ),
             )
         except Exception:
             vector_store = _NullVectorStore()

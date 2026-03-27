@@ -29,8 +29,26 @@ class BijiHybridSearchService:
         hits = sum(1 for term in terms if term in text)
         return hits / len(terms)
 
+    def _search_fts_candidates(self, query: str, top_k: int) -> list[dict[str, Any]]:
+        candidates: list[dict[str, Any]] = []
+        seen_note_ids: set[str] = set()
+        raw_queries = [str(query or "").strip()] + self._query_terms(query)
+
+        for candidate_query in raw_queries:
+            if not candidate_query:
+                continue
+            for note in self.db.search_notes_fts(candidate_query):
+                note_id = str(note.get("note_id") or "")
+                if not note_id or note_id in seen_note_ids:
+                    continue
+                seen_note_ids.add(note_id)
+                candidates.append(note)
+                if len(candidates) >= top_k:
+                    return candidates
+        return candidates
+
     def search(self, query: str, top_k: int = 10) -> dict[str, Any]:
-        fts_hits = self.db.search_notes_fts(query)
+        fts_hits = self._search_fts_candidates(query, top_k=top_k)
         try:
             vector_hits = self.vector_store.search(query, top_k=top_k)
         except Exception:

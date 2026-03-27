@@ -11,9 +11,21 @@ from openai import OpenAI
 
 
 class OpenAIEmbedder:
-    def __init__(self, model: str = "text-embedding-3-large", client: OpenAI | None = None):
+    def __init__(
+        self,
+        model: str = "text-embedding-3-large",
+        api_key: str | None = None,
+        base_url: str | None = None,
+        client: OpenAI | None = None,
+    ):
         self.model = model
-        self.client = client or OpenAI()
+        if client is not None:
+            self.client = client
+        else:
+            client_kwargs = {"api_key": api_key}
+            if base_url:
+                client_kwargs["base_url"] = base_url
+            self.client = OpenAI(**client_kwargs)
 
     def embed_texts(self, texts: list[str]) -> list[list[float]]:
         items = [str(text or "") for text in texts]
