@@ -32,6 +32,7 @@ class BijiIndexBuilder:
 
     def rebuild(self, full_rebuild: bool = False) -> dict[str, int]:
         notes = self.db.list_notes()
+        note_ids = {str(note.get("note_id") or "") for note in notes if note.get("note_id")}
         notes_indexed = 0
         chunks_indexed = 0
 
@@ -60,6 +61,14 @@ class BijiIndexBuilder:
                     self._vector_enabled = False
             notes_indexed += 1
             chunks_indexed += len(enriched_chunks)
+
+        if full_rebuild:
+            self.db.delete_chunks_not_in(note_ids)
+            if self._vector_enabled:
+                try:
+                    self.vector_store.delete_chunks_not_in(note_ids)
+                except Exception:
+                    self._vector_enabled = False
 
         return {
             "notes_indexed": notes_indexed,

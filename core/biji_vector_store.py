@@ -159,6 +159,22 @@ class BijiVectorStore:
         rows = [row for row in self._load_rows() if row["note_id"] != note_id]
         self._save_rows(rows)
 
+    def delete_chunks_not_in(self, note_ids: set[str]) -> None:
+        table = self._open_table()
+        if table is not None:
+            rows = table.to_list()
+            stale_note_ids = {
+                str(row.get("note_id") or "")
+                for row in rows
+                if str(row.get("note_id") or "") and str(row.get("note_id") or "") not in note_ids
+            }
+            for note_id in stale_note_ids:
+                table.delete(f"note_id = {self._quote_literal(note_id)}")
+            return
+
+        rows = [row for row in self._load_rows() if row["note_id"] in note_ids]
+        self._save_rows(rows)
+
     def search(self, query: str, top_k: int = 10) -> list[dict]:
         query_vector = self.embedder.embed_texts([query])[0]
         table = self._open_table()

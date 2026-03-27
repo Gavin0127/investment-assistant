@@ -14,6 +14,8 @@ def test_index_cli_rebuilds_chunks_and_vectors(monkeypatch, tmp_path, capsys):
             return {
                 "embedding_provider": "openai",
                 "embedding_model": "text-embedding-3-large",
+                "embedding_api_key": "test-key",
+                "embedding_base_url": None,
                 "vector_db_dir": str(self.base_dir / "data" / "biji_vectors"),
                 "chunk_size": 700,
                 "chunk_overlap": 120,

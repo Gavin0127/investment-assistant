@@ -138,7 +138,8 @@ class Storage:
 
     def get_biji_retrieval_config(self) -> Dict:
         """获取 Biji 混合检索配置"""
-        config = self.get_config().get("biji_retrieval") or {}
+        full_config = self.get_config()
+        config = full_config.get("biji_retrieval") or {}
         chunk_size = self._parse_int(config.get("chunk_size"), 700)
         if chunk_size <= 0:
             chunk_size = 700
@@ -151,15 +152,28 @@ class Storage:
         if top_k <= 0:
             top_k = 10
 
+        embedding_provider = self._parse_str(
+            config.get("embedding_provider"),
+            "openai",
+        )
+        embedding_model = self._parse_str(
+            config.get("embedding_model"),
+            "text-embedding-3-large",
+        )
+        embedding_api_key = self._parse_str(
+            config.get("embedding_api_key"),
+            str(full_config.get("openai_api_key") or os.getenv("OPENAI_API_KEY") or ""),
+        )
+        embedding_base_url = self._parse_str(
+            config.get("embedding_base_url"),
+            self.get_llm_base_url() or "",
+        )
+
         return {
-            "embedding_provider": self._parse_str(
-                config.get("embedding_provider"),
-                "openai",
-            ),
-            "embedding_model": self._parse_str(
-                config.get("embedding_model"),
-                "text-embedding-3-large",
-            ),
+            "embedding_provider": embedding_provider,
+            "embedding_model": embedding_model,
+            "embedding_api_key": embedding_api_key,
+            "embedding_base_url": embedding_base_url,
             "vector_db_dir": self._parse_str(
                 config.get("vector_db_dir"),
                 str(self.base_dir / "data" / "biji_vectors"),

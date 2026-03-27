@@ -407,6 +407,18 @@ class BijiDB:
             ).fetchall()
             return [dict(row) for row in rows]
 
+    def delete_chunks_not_in(self, note_ids: set[str]) -> None:
+        with self._get_conn() as conn:
+            if note_ids:
+                placeholders = ",".join("?" for _ in note_ids)
+                conn.execute(
+                    f"DELETE FROM note_chunks WHERE note_id NOT IN ({placeholders})",
+                    tuple(note_ids),
+                )
+            else:
+                conn.execute("DELETE FROM note_chunks")
+            conn.commit()
+
     def search_notes_fts(self, query: str) -> list[dict]:
         query = str(query or "").strip()
         if not query:

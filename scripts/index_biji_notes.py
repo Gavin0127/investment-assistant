@@ -39,8 +39,8 @@ def main(argv: list[str] | None = None) -> int:
                 db_dir=cfg["vector_db_dir"],
                 embedder=OpenAIEmbedder(
                     model=cfg["embedding_model"],
-                    api_key=storage.get_api_key(),
-                    base_url=storage.get_llm_base_url(),
+                    api_key=cfg["embedding_api_key"] or None,
+                    base_url=cfg["embedding_base_url"] or None,
                 ),
             ),
             markdown_root=str(data_dir / "biji_markdown"),
