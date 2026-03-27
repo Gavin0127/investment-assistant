@@ -32,6 +32,7 @@
 - AI 笔记默认导出 `原始内容` 与 `AI 总结（需验证可信度）` 两段。
 - 无法稳定判型时保守导出为 `内容摘录`。
 - 原生笔记只导出 `笔记正文`。
+- Biji 混合检索会额外使用 SQLite `FTS5`、`note_chunks` 和本地 `LanceDB`/JSON 向量侧车。
 - 个股数据位于 `stocks/{stock_id}/`，包含 `playbook.json`、`history.json` 与 `uploads/`。
 
 示例（简化）：
@@ -59,6 +60,9 @@
 - `uv run python scripts/sync_biji.py --login -v` 首次保存 Biji 浏览器登录态。
 - `uv run python scripts/sync_biji.py --rebuild -v` 清空本地 Biji 数据并按新结构全量重建。
 - `uv run python scripts/sync_biji.py -v` 运行 Biji 笔记增量同步。
+- `uv run python scripts/index_biji_notes.py --rebuild` 重建 Biji 混合检索索引。
+- `uv run python scripts/search_biji_notes.py "英伟达 护城河 token 经济"` 查询本地 Biji chunks。
+- user-level skill `biji-hybrid-search` 位于 `~/.codex/skills/biji-hybrid-search/`，只返回 chunks 和 `markdown_path`，不负责总结。
 - 可选：配置认证（见 README），例如 `curl -X POST http://localhost:5000/api/auth/setup ...`。
 - 当前未配置自动化测试命令；修改后请做手动冒烟验证（首页、添加股票、发起研究、查看历史）。
 

@@ -845,6 +845,47 @@ uv run python scripts/sync_biji.py --rebuild -v
   - `## 内容摘录`
 - 站外链接只记录在正文和 `note_assets` 中，不穿透抓正文
 
+### Biji 混合检索
+
+如果你希望让外部 `Claude Code` 直接搜索本地 Biji 资料库，可以在同步完成后继续构建混合检索索引。
+
+检索层由三部分组成：
+
+- SQLite 主数据：`biji_notes.db`
+- 关键词检索：SQLite `FTS5`
+- 语义召回：本地 `LanceDB` 向量侧车
+
+构建索引：
+
+```bash
+uv run python scripts/index_biji_notes.py --rebuild
+```
+
+查询相关 chunks：
+
+```bash
+uv run python scripts/search_biji_notes.py "英伟达 护城河 token 经济"
+```
+
+返回 JSON 结构至少包含：
+
+- `note_id`
+- `title`
+- `section_type`
+- `score`
+- `text`
+- `markdown_path`
+
+其中 `markdown_path` 指向本地原始 Markdown，方便后续让 `Claude Code` 自己深读和总结。
+
+### Claude Code Skill
+
+本机额外提供了一个 user-level skill：
+
+- `~/.codex/skills/biji-hybrid-search/`
+
+这个 skill 只负责调用 `scripts/search_biji_notes.py` 并返回相关 chunks 与 `markdown_path`，不负责总结、不负责改写资料。
+
 ---
 
 ## CLI 命令行使用
