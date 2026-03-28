@@ -876,7 +876,20 @@ uv run python scripts/search_biji_notes.py "英伟达 护城河 token 经济"
 - `text`
 - `markdown_path`
 
-其中 `markdown_path` 指向本地原始 Markdown，方便后续让 `Claude Code` 自己深读和总结。
+当结果来自雪球同步内容时，还会额外包含：
+
+- `source_type`
+  - `biji` 结果通常不显式返回该字段
+  - `xueqiu` 表示结果来自本地雪球帖子库
+- `source_url`
+  - 雪球原帖地址，方便跳转定位
+- `user_id`
+- `created_at`
+
+其中：
+
+- Biji 结果的 `markdown_path` 指向本地原始 Markdown，方便后续让 `Claude Code` 自己深读和总结
+- 雪球结果没有对应的本地 Markdown，因此 `markdown_path` 为空字符串，需要改用 `source_url` 回看原帖
 
 ### Claude Code Skill
 
@@ -884,7 +897,12 @@ uv run python scripts/search_biji_notes.py "英伟达 护城河 token 经济"
 
 - `~/.codex/skills/biji-hybrid-search/`
 
-这个 skill 只负责调用 `scripts/search_biji_notes.py` 并返回相关 chunks 与 `markdown_path`，不负责总结、不负责改写资料。
+这个 skill 只负责调用 `scripts/search_biji_notes.py` 并返回相关 chunks。
+
+- 对 Biji 结果，重点看 `markdown_path`
+- 对雪球结果，重点看 `source_type = "xueqiu"` 与 `source_url`
+
+它不负责总结、不负责改写资料。
 
 ---
 

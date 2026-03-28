@@ -14,6 +14,7 @@ from core.biji_db import BijiDB
 from core.biji_search import BijiHybridSearchService
 from core.biji_vector_store import BijiVectorStore, OpenAIEmbedder
 from core.storage import Storage
+from core.xueqiu_db import XueqiuDB
 
 
 class _NullVectorStore:
@@ -56,6 +57,7 @@ def main(argv: list[str] | None = None) -> int:
         service = BijiHybridSearchService(
             db=BijiDB(str(data_dir / "biji_notes.db")),
             vector_store=vector_store,
+            xueqiu_db=XueqiuDB(str(data_dir / "xueqiu_posts.db")),
         )
         result = service.search(args.query, top_k=top_k)
         print(json.dumps(result, ensure_ascii=False, indent=2))
