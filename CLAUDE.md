@@ -20,7 +20,7 @@ uv run python -m pytest tests/test_llm_client.py -v  # 单个文件
 uv run python -m pytest tests/test_llm_client.py::TestLLMClientInit::test_default_provider_is_gemini -v  # 单个用例
 
 # 启动
-uv run python web/app.py                         # Web UI (http://localhost:5000)
+uv run python web/app.py                         # Web UI (http://localhost:8100)
 uv run python assistant.py                       # CLI 交互模式
 
 # 利润跟踪
@@ -29,6 +29,9 @@ uv run python scripts/update_prices.py           # 手动更新大宗商品价�
 # 雪球同步
 uv run python scripts/sync_xueqiu.py --user-id 1936609590            # 全量同步
 uv run python scripts/sync_xueqiu.py --user-id 1936609590 -v         # 全量同步（详细日志）
+# 如果深页返回 10022，优先复用主 Chrome 的 CDP 会话：
+open -na 'Google Chrome' --args --remote-debugging-port=9222         # 启动可复用的主 Chrome
+XUEQIU_CDP_HTTP_URL=http://127.0.0.1:9222 uv run python scripts/sync_xueqiu.py --user-id 1936609590 -v
 
 # Docker
 docker compose up -d                             # 容器启动 (端口 5100)
@@ -131,6 +134,11 @@ User Feedback → Preference Learning → 下一轮研究上下文
 
 ## 最近重大变更
 
+- 2026-03-28: 雪球同步切回 CDP 优先策略
+  - `core/xueqiu_scraper.py` 现在优先复用主 Chrome 的 CDP 会话，失败时再回退到本地持久化浏览器
+  - 修复 patchright 内置 Chromium 在本机崩溃的问题
+  - 深页登录态不足时，明确报 `10022/400016` 对应的登录态错误，不再误报“同步完成 0 条”
+  - devlog: `docs/devlog/2026-03-28_xueqiu-cdp-sync-lessons.md`
 - 2026-03-09: 雪球 V2 多用户爬取 + AI 聊天助手
   - 多用户管理（xueqiu_users 表）、批次控制（max_pages）、同步进度展示
   - AI 聊天助手：SSE 流式、思考过程折叠、会话管理、基于雪球帖子的上下文构建

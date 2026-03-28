@@ -97,41 +97,66 @@ class TestNeedsFullFetch:
 
 
 class TestBrowserFetchApi:
-    """_browser_fetch_api 现在用 page.goto() 导航获取 JSON。"""
+    """_browser_fetch_api 优先用浏览器内 fetch()，必要时回退到 goto。"""
 
-    def test_parse_json_response(self, scraper):
-        """goto 返回 JSON 时正确解析。"""
+    def test_prefers_fetch_json_response(self, scraper):
+        """fetch 返回 JSON 时直接解析，不走 goto。"""
+        import json as _json
+        mock_page = MagicMock()
+        mock_page.evaluate.return_value = {
+            "ok": True,
+            "status": 200,
+            "text": _json.dumps({"statuses": [{"id": 1}]}),
+        }
+        result = scraper._browser_fetch_api(mock_page, "/test", {"page": 1})
+        assert result == {"statuses": [{"id": 1}]}
+        mock_page.goto.assert_not_called()
+
+    def test_falls_back_to_goto_when_fetch_returns_html(self, scraper):
+        """fetch 返回 HTML 时回退到 goto。"""
         import json as _json
         mock_page = MagicMock()
         mock_resp = MagicMock()
         mock_resp.status = 200
         mock_page.goto.return_value = mock_resp
-        mock_page.evaluate.return_value = _json.dumps({"statuses": [{"id": 1}]})
+        mock_page.evaluate.side_effect = [
+            {"ok": True, "status": 200, "text": "<html>blocked</html>"},
+            _json.dumps({"statuses": [{"id": 2}]}),
+        ]
         mock_page.content.return_value = ""
         result = scraper._browser_fetch_api(mock_page, "/test", {"page": 1})
-        assert result == {"statuses": [{"id": 1}]}
+        assert result == {"statuses": [{"id": 2}]}
+        mock_page.goto.assert_called_once()
 
-    def test_detect_waf_html(self, scraper):
-        """goto 返回 WAF challenge 页面时识别为拦截。"""
+    def test_detect_waf_html_after_goto(self, scraper):
+        """fetch 失败且 goto 返回 WAF challenge 页面时识别为拦截。"""
         mock_page = MagicMock()
         mock_resp = MagicMock()
         mock_resp.status = 200
         mock_page.goto.return_value = mock_resp
-        mock_page.evaluate.return_value = ""  # body.innerText 为空
-        mock_page.content.return_value = '<meta name="aliyun_waf_aa">'
+        mock_page.evaluate.side_effect = [
+            {"ok": False, "error": "timeout"},
+            "",
+            "",
+        ]
+        mock_page.content.side_effect = [
+            '<meta name="aliyun_waf_aa">',
+            '<meta name="aliyun_waf_aa">',
+        ]
         result = scraper._browser_fetch_api(mock_page, "/test", {"page": 1})
         assert result is None
 
-    def test_detect_empty_response(self, scraper):
-        """goto 返回空内容时识别为失败。"""
+    def test_raise_clear_error_on_login_required(self, scraper):
+        """API 明确返回登录错误时抛出清晰异常。"""
         mock_page = MagicMock()
-        mock_resp = MagicMock()
-        mock_resp.status = 200
-        mock_page.goto.return_value = mock_resp
-        mock_page.evaluate.return_value = ""
-        mock_page.content.return_value = ""
-        result = scraper._browser_fetch_api(mock_page, "/test", {"page": 1})
-        assert result is None
+        mock_page.evaluate.return_value = {
+            "ok": True,
+            "status": 200,
+            "text": '{"error_description":"请登录雪球查看更多内容","error_code":"10022"}',
+        }
+
+        with pytest.raises(RuntimeError, match="登录态"):
+            scraper._browser_fetch_api(mock_page, "/test", {"page": 2})
 
 
 class TestMaxPages:
@@ -147,6 +172,127 @@ class TestMaxPages:
         sig = inspect.signature(scraper._sync_all)
         assert "max_pages" in sig.parameters
         assert sig.parameters["max_pages"].default == 5
+
+
+class TestBrowserLaunchConfig:
+    def test_build_launch_kwargs_uses_env_override(self, scraper, monkeypatch, tmp_path):
+        fake_chrome = tmp_path / "chrome-bin"
+        fake_chrome.write_text("")
+        fake_chrome.chmod(0o755)
+        monkeypatch.setenv("XUEQIU_CHROME_PATH", str(fake_chrome))
+
+        kwargs = scraper._build_launch_kwargs(headless=False)
+
+        assert kwargs["headless"] is False
+        assert kwargs["executable_path"] == str(fake_chrome)
+        assert "--disable-blink-features=AutomationControlled" in kwargs["args"]
+
+    def test_build_launch_kwargs_falls_back_to_agent_browser_bundle(
+        self, scraper, monkeypatch, tmp_path
+    ):
+        fake_chrome = (
+            tmp_path
+            / ".agent-browser"
+            / "browsers"
+            / "chrome-147.0.7727.24"
+            / "Google Chrome for Testing.app"
+            / "Contents"
+            / "MacOS"
+            / "Google Chrome for Testing"
+        )
+        fake_chrome.parent.mkdir(parents=True)
+        fake_chrome.write_text("")
+        fake_chrome.chmod(0o755)
+        monkeypatch.delenv("XUEQIU_CHROME_PATH", raising=False)
+        monkeypatch.setenv("HOME", str(tmp_path))
+
+        kwargs = scraper._build_launch_kwargs(headless=True)
+
+        assert kwargs["headless"] is True
+        assert kwargs["executable_path"] == str(fake_chrome)
+
+    def test_build_launch_kwargs_without_env_override_keeps_default_shape(
+        self, scraper, monkeypatch, tmp_path
+    ):
+        monkeypatch.delenv("XUEQIU_CHROME_PATH", raising=False)
+        monkeypatch.setenv("HOME", str(tmp_path))
+
+        kwargs = scraper._build_launch_kwargs(headless=True)
+
+        assert kwargs["headless"] is True
+        assert "--disable-blink-features=AutomationControlled" in kwargs["args"]
+
+
+class TestCdpConfig:
+    def test_resolve_cdp_ws_url_prefers_env_ws(self, scraper, monkeypatch):
+        monkeypatch.setenv("XUEQIU_CDP_WS_URL", "ws://127.0.0.1:9222/devtools/browser/test")
+
+        assert scraper._resolve_cdp_ws_url() == "ws://127.0.0.1:9222/devtools/browser/test"
+
+    def test_resolve_cdp_ws_url_reads_json_version(self, scraper, monkeypatch):
+        monkeypatch.delenv("XUEQIU_CDP_WS_URL", raising=False)
+        monkeypatch.setenv("XUEQIU_CDP_HTTP_URL", "http://127.0.0.1:9222")
+
+        mock_resp = MagicMock()
+        mock_resp.raise_for_status.return_value = None
+        mock_resp.json.return_value = {
+            "webSocketDebuggerUrl": "ws://127.0.0.1:9222/devtools/browser/test"
+        }
+
+        with patch("core.xueqiu_scraper.requests.get", return_value=mock_resp) as mock_get:
+            assert scraper._resolve_cdp_ws_url() == "ws://127.0.0.1:9222/devtools/browser/test"
+            mock_get.assert_called_once_with(
+                "http://127.0.0.1:9222/json/version", timeout=2
+            )
+
+    def test_resolve_cdp_ws_url_returns_none_when_unavailable(self, scraper, monkeypatch):
+        monkeypatch.delenv("XUEQIU_CDP_WS_URL", raising=False)
+        monkeypatch.delenv("XUEQIU_CDP_HTTP_URL", raising=False)
+        with patch("core.xueqiu_scraper.requests.get", side_effect=OSError("boom")):
+            assert scraper._resolve_cdp_ws_url() is None
+
+
+class TestBrowserSessionOpen:
+    def test_open_browser_session_prefers_cdp(self, scraper, monkeypatch):
+        monkeypatch.setattr(
+            scraper, "_resolve_cdp_ws_url", lambda: "ws://127.0.0.1:9222/devtools/browser/test"
+        )
+        mock_pw = MagicMock()
+        mock_browser = MagicMock()
+        mock_context = MagicMock()
+        mock_page = MagicMock()
+        mock_browser.contexts = [mock_context]
+        mock_context.new_page.return_value = mock_page
+        mock_pw.chromium.connect_over_cdp.return_value = mock_browser
+
+        session = scraper._open_browser_session(mock_pw, headless=False)
+
+        assert session["mode"] == "cdp"
+        assert session["page"] is mock_page
+        mock_pw.chromium.connect_over_cdp.assert_called_once_with(
+            "ws://127.0.0.1:9222/devtools/browser/test"
+        )
+        mock_pw.chromium.launch_persistent_context.assert_not_called()
+
+    def test_open_browser_session_falls_back_to_launch(self, scraper, monkeypatch):
+        monkeypatch.setattr(scraper, "_resolve_cdp_ws_url", lambda: None)
+        monkeypatch.setattr(scraper, "_cleanup_stale_profile_locks", MagicMock())
+        monkeypatch.setattr(
+            scraper,
+            "_build_launch_kwargs",
+            lambda headless: {"user_data_dir": "x", "headless": headless, "args": []},
+        )
+        mock_pw = MagicMock()
+        mock_context = MagicMock()
+        mock_page = MagicMock()
+        mock_context.new_page.return_value = mock_page
+        mock_pw.chromium.launch_persistent_context.return_value = mock_context
+
+        session = scraper._open_browser_session(mock_pw, headless=True)
+
+        assert session["mode"] == "launch"
+        assert session["page"] is mock_page
+        mock_pw.chromium.launch_persistent_context.assert_called_once()
 
 
 class TestSyncCursor:
@@ -248,6 +394,19 @@ class TestSyncAllV2:
         assert cursor is not None
         assert cursor["history_done"] is True
         assert cursor["has_gap"] is False
+
+    def test_first_sync_waf_block_raises_clear_error(self, scraper):
+        """首次同步第一页一直被 WAF 拦截时，应明确报错而不是误报完成。"""
+        mock_page = MagicMock()
+        mock_page.wait_for_timeout = MagicMock()
+
+        scraper._browser_fetch_api = MagicMock(return_value=None)
+        scraper._ensure_waf_ready = MagicMock()
+
+        with pytest.raises(RuntimeError, match="访问验证"):
+            scraper._sync_all(mock_page, user_id=111, max_pages=1)
+
+        assert scraper.sync_status == "error"
 
     def test_incremental_no_new_posts(self, scraper):
         """增量同步：没有新帖，阶段 1 碰到 newest_synced_at 就连上，跳到阶段 2 深挖。"""

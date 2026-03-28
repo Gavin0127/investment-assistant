@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import re
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -48,6 +49,144 @@ class XueqiuScraper:
         self.sync_progress: str = ""
         self.sync_count: int = 0
 
+    def _resolve_browser_executable(self) -> Optional[str]:
+        """优先复用系统已安装的 Chrome，避免 patchright 内置 Chromium 启动崩溃。"""
+        env_path = os.environ.get("XUEQIU_CHROME_PATH")
+        if env_path:
+            candidate = Path(env_path).expanduser()
+            if candidate.is_file() and os.access(candidate, os.X_OK):
+                return str(candidate)
+
+        home = Path(os.path.expanduser("~"))
+        agent_browser_root = home / ".agent-browser" / "browsers"
+        bundled = sorted(
+            agent_browser_root.glob(
+                "chrome-*/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing"
+            ),
+            reverse=True,
+        )
+        for candidate in bundled:
+            if candidate.is_file() and os.access(candidate, os.X_OK):
+                return str(candidate)
+
+        common_candidates = [
+            Path("/Applications/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing"),
+            Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"),
+        ]
+        for candidate in common_candidates:
+            if candidate.is_file() and os.access(candidate, os.X_OK):
+                return str(candidate)
+
+        return None
+
+    def _build_launch_kwargs(self, headless: bool) -> dict:
+        """构造浏览器启动参数。"""
+        kwargs = {
+            "user_data_dir": self._user_data_dir,
+            "headless": headless,
+            "args": ["--disable-blink-features=AutomationControlled"],
+        }
+        executable_path = self._resolve_browser_executable()
+        if executable_path:
+            kwargs["executable_path"] = executable_path
+        return kwargs
+
+    def _cleanup_stale_profile_locks(self) -> None:
+        """清理崩溃后残留的 Chromium profile 锁，避免下次启动直接失败。"""
+        profile_dir = Path(self._user_data_dir)
+        lock_paths = [
+            profile_dir / "SingletonLock",
+            profile_dir / "SingletonSocket",
+            profile_dir / "SingletonCookie",
+        ]
+        if not any(path.exists() or path.is_symlink() for path in lock_paths):
+            return
+
+        try:
+            result = subprocess.run(
+                ["pgrep", "-af", self._user_data_dir],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        except FileNotFoundError:
+            return
+
+        if result.stdout.strip():
+            _log("browser profile appears in use, skip stale lock cleanup")
+            return
+
+        for path in lock_paths:
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                logger.warning("Failed to remove stale lock: %s", path)
+
+    def _resolve_cdp_ws_url(self) -> Optional[str]:
+        """解析可复用的本机 Chrome CDP 地址。"""
+        ws_url = os.environ.get("XUEQIU_CDP_WS_URL")
+        if ws_url:
+            return ws_url
+
+        http_base = os.environ.get("XUEQIU_CDP_HTTP_URL", "http://127.0.0.1:9222")
+        try:
+            resp = requests.get(f"{http_base.rstrip('/')}/json/version", timeout=2)
+            resp.raise_for_status()
+            return resp.json().get("webSocketDebuggerUrl")
+        except Exception:
+            return None
+
+    def _open_browser_session(self, pw, headless: bool) -> dict:
+        """打开浏览器会话。优先复用主 Chrome 的 CDP 会话，失败时回退到本地持久化 profile。"""
+        cdp_ws_url = self._resolve_cdp_ws_url()
+        if cdp_ws_url:
+            _log(f"using cdp browser: {cdp_ws_url}")
+            browser = pw.chromium.connect_over_cdp(cdp_ws_url)
+            context = browser.contexts[0] if browser.contexts else browser.new_context()
+            page = context.new_page()
+            return {
+                "mode": "cdp",
+                "browser": browser,
+                "context": context,
+                "page": page,
+            }
+
+        self._cleanup_stale_profile_locks()
+        launch_kwargs = self._build_launch_kwargs(headless=headless)
+        if launch_kwargs.get("executable_path"):
+            _log(f"using browser executable: {launch_kwargs['executable_path']}")
+        else:
+            _log("using patchright bundled chromium")
+
+        context = pw.chromium.launch_persistent_context(**launch_kwargs)
+        page = context.new_page()
+        return {
+            "mode": "launch",
+            "browser": None,
+            "context": context,
+            "page": page,
+        }
+
+    def _close_browser_session(self, session: dict) -> None:
+        """关闭当前爬取会话，但不破坏用户的主 Chrome。"""
+        if session["mode"] == "cdp":
+            try:
+                if not session["page"].is_closed():
+                    session["page"].close()
+            except Exception:
+                pass
+            try:
+                session["browser"].close()
+            except Exception:
+                pass
+            return
+
+        session["context"].close()
+
+    @staticmethod
+    def _raise_waf_blocked() -> None:
+        raise RuntimeError("雪球访问验证未通过，请在浏览器完成滑块验证后重试")
+
     def login_and_sync(self, user_id: int, headless: bool = False, max_pages: int = 5):
         """直接用 patchright 控制浏览器，完全掌控生命周期。"""
         self.sync_status = "logging_in"
@@ -57,12 +196,9 @@ class XueqiuScraper:
             from patchright.sync_api import sync_playwright
 
             with sync_playwright() as pw:
-                context = pw.chromium.launch_persistent_context(
-                    user_data_dir=self._user_data_dir,
-                    headless=headless,
-                    args=["--disable-blink-features=AutomationControlled"],
-                )
-                page = context.new_page()
+                session = self._open_browser_session(pw, headless=headless)
+                context = session["context"]
+                page = session["page"]
                 page.set_default_timeout(120_000)  # 2 分钟超时，给足操作时间
 
                 try:
@@ -99,7 +235,7 @@ class XueqiuScraper:
 
                 finally:
                     _log("closing browser context...")
-                    context.close()
+                    self._close_browser_session(session)
 
         except Exception as e:
             self.sync_status = "error"
@@ -134,6 +270,8 @@ class XueqiuScraper:
 
                     data = self._fetch_with_waf_retry(page, user_id, pg)
                     if data is None:
+                        if pg == 1 and not all_timestamps:
+                            self._raise_waf_blocked()
                         break
                     pages_used += 1
 
@@ -213,6 +351,8 @@ class XueqiuScraper:
             while locate_attempts < 3 and remaining > 0:
                 data = self._fetch_with_waf_retry(page, user_id, pg)
                 if data is None:
+                    if pg == start_page and not all_timestamps:
+                        self._raise_waf_blocked()
                     break
 
                 posts = self._parse_timeline(data)
@@ -419,31 +559,43 @@ class XueqiuScraper:
         cookies = page.context.cookies()
         _log(f"_ensure_waf_ready: cookies={[c['name'] for c in cookies]}")
 
-    def _browser_fetch_api(self, page, path: str, params: dict) -> Optional[dict]:
-        """在浏览器内导航到 API URL 获取 JSON 数据。
+    def _parse_api_payload(self, path: str, text: str) -> Optional[dict]:
+        """解析 API 返回文本。HTML/WAF 返回 None，登录态错误抛异常。"""
+        if not text or not text.strip():
+            _log(f"empty body: {path}")
+            return None
 
-        阿里云 WAF 会拦截 fetch() XHR 请求，但允许浏览器直接导航。
-        策略：用 page.goto() 导航到 API URL，从页面 body 提取 JSON。
-        """
+        stripped = text.lstrip()
+        if stripped.startswith("<"):
+            _log(f"non-json html response: {path}")
+            return None
+
+        try:
+            data = json.loads(text)
+        except json.JSONDecodeError:
+            _log(f"JSON parse failed: {path}")
+            return None
+
+        error_code = str(data.get("error_code") or "")
+        if error_code in {"10022", "400016"}:
+            raise RuntimeError("雪球登录态不足，请在浏览器中重新登录后重试")
+
+        return data
+
+    def _browser_goto_api(self, page, path: str, params: dict) -> Optional[dict]:
+        """回退方案：直接导航到 API URL，从页面 body 中提取 JSON。"""
         url = f"{_BASE_URL}{path}?{urlencode(params)}"
         try:
             resp = page.goto(url, wait_until="domcontentloaded", timeout=30000)
             status = resp.status if resp else 0
-            # 等待页面内容加载
             page.wait_for_timeout(2000)
 
             body = page.evaluate("() => document.body?.innerText || ''")
             _log(f"goto {path} → HTTP {status}, len={len(body)}, prefix={body[:200]!r}")
 
-            if not body or not body.strip():
-                _log(f"empty body: {path}")
-                return None
-
-            # 检查是否是 WAF challenge 页面
             html = page.content()
             if 'aliyun_waf_aa' in html or '_waf_' in html[:500]:
                 _log(f"WAF challenge page detected: {path}")
-                # 等待 WAF JS 执行完毕
                 page.wait_for_timeout(5000)
                 body = page.evaluate("() => document.body?.innerText || ''")
                 _log(f"after WAF wait: len={len(body)}, prefix={body[:200]!r}")
@@ -451,25 +603,61 @@ class XueqiuScraper:
                     _log(f"WAF still blocking: {path}")
                     return None
 
-            try:
-                return json.loads(body)
-            except json.JSONDecodeError:
-                # body 可能包含额外的 HTML，尝试提取 JSON 部分
-                _log(f"JSON parse failed, trying to extract JSON from body")
-                # 尝试用 pre 标签内容（浏览器显示 JSON 时通常包裹在 pre 里）
-                pre_text = page.evaluate("""
-                    () => {
-                        const pre = document.querySelector('pre');
-                        return pre ? pre.textContent : '';
-                    }
-                """)
-                if pre_text:
-                    return json.loads(pre_text)
-                return None
+            data = self._parse_api_payload(path, body)
+            if data is not None:
+                return data
 
+            _log("JSON parse failed, trying to extract JSON from body")
+            pre_text = page.evaluate("""
+                () => {
+                    const pre = document.querySelector('pre');
+                    return pre ? pre.textContent : '';
+                }
+            """)
+            return self._parse_api_payload(path, pre_text)
         except Exception as e:
             _log(f"goto error: {path} — {e}")
             return None
+
+    def _browser_fetch_api(self, page, path: str, params: dict) -> Optional[dict]:
+        """优先在浏览器内用 fetch() 调 API，必要时回退到 goto。"""
+        url = f"{_BASE_URL}{path}?{urlencode(params)}"
+        try:
+            fetch_result = page.evaluate("""
+                async (url) => {
+                    const controller = new AbortController();
+                    const timeoutId = setTimeout(() => controller.abort('timeout'), 15000);
+                    try {
+                        const resp = await fetch(url, {
+                            credentials: 'include',
+                            headers: { 'Accept': 'application/json' },
+                            signal: controller.signal,
+                        });
+                        const text = await resp.text();
+                        return { ok: true, status: resp.status, text };
+                    } catch (e) {
+                        return { ok: false, error: String(e) };
+                    } finally {
+                        clearTimeout(timeoutId);
+                    }
+                }
+            """, url)
+            if fetch_result.get("ok"):
+                text = fetch_result.get("text") or ""
+                status = fetch_result.get("status")
+                _log(f"fetch {path} → HTTP {status}, len={len(text)}, prefix={text[:200]!r}")
+                data = self._parse_api_payload(path, text)
+                if data is not None:
+                    return data
+                _log(f"fetch returned non-json, fallback to goto: {path}")
+            else:
+                _log(f"fetch error: {path} — {fetch_result.get('error')}")
+        except RuntimeError:
+            raise
+        except Exception as e:
+            _log(f"fetch exception: {path} — {e}")
+
+        return self._browser_goto_api(page, path, params)
 
     def _parse_timeline(self, data: dict) -> List[Dict]:
         posts = []
